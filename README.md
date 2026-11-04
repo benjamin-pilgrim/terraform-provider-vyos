@@ -58,20 +58,6 @@ use the JSON shape returned by the VyOS API:
   significant; match the order returned by your router. No schema-wide coercion
   of numeric/bool values or router-generated defaults is attempted.
 
-For issue #53's template use case, pass a template that produces valid JSON
-straight to `value`. Do not JSON-encode a template's JSON text a second time:
-
-```hcl
-value = templatefile("${path.module}/ntp.json.tftpl", {
-  ntp_servers = ["time1.google.com", "time2.google.com"]
-})
-```
-
-```hcl
-# ntp.json.tftpl
-${jsonencode({ for server in ntp_servers : server => {} })}
-```
-
 Import with `terraform import vyos_config.ingress_rules 'firewall ipv4 name TUNNEL-INGRESS'`.
 After import, set `value` to the complete desired subtree before applying. For an
 immediate no-op, use `jsonencode` with the router's exact JSON shape. Import has no
