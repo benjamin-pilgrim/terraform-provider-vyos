@@ -32,12 +32,8 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso openssl
 ```
 
-QEMU itself runs without root and requires KVM. The runner fails clearly when
-`/dev/kvm` is unavailable; local software emulation took nearly the full
-10-minute boot budget. No TAP interface, host bridge, Docker or privileged
-container is used. QEMU's `restrict=on` user network blocks guest
-connections to the host and outside networks; the only explicit forward is the
-HTTPS API, bound to host loopback. TLS verification remains enabled.
+The VM runs without root and requires KVM. Its network is isolated; tests connect
+to its HTTPS API through localhost with TLS verification enabled.
 
 The host needs Internet access for release metadata, the ISO and dependencies. The guest has no
 Internet requirement. ISO bytes are verified even after a cache hit; boot files
