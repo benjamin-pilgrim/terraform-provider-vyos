@@ -76,7 +76,13 @@ HashiCorp recommends Framework for new development and migration where possible:
 is the latest stable release checked, although the documentation selector still
 labels 1.18.x as latest. This is a dependency upgrade, not a migration to SDK v2.
 
-Real VM acceptance is explicitly dispatched against a prepared pinned isolated
-runner. The former mutable privileged Docker image and Terraform 1.0–1.2 matrix
-are removed. Integration evidence uses Terraform 1.17.0; final acceptance and CI
-select 1.17.1. CI itself has not been executed on GitHub as part of this local patch.
+Real VM acceptance now runs automatically on a standard GitHub-hosted Ubuntu
+runner for PRs and pushes to main. The checked-in runner downloads and verifies
+the pinned ISO, boots QEMU with a restricted user network, bootstraps test-only
+HTTPS, runs Terraform plus native active/saved checks, and always tears down the
+VM. It needs no prepared runner, external endpoint or repository secrets.
+The former mutable privileged Docker image and Terraform 1.0–1.2 matrix are
+removed. A pinned container could also be reproducible; using a VM here matches
+the actual validated VyOS build. Integration evidence uses Terraform 1.17.0;
+self-contained VM acceptance and CI use 1.17.1. See VALIDATION.md for the latest
+local and hosted CI results.

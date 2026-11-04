@@ -1,42 +1,77 @@
-# Real VyOS acceptance tests
+# Automated VyOS acceptance tests
 
-Use a disposable, isolated VM pinned to **2026.10.22-0026-rolling**.
-The former `foltik/vyos:rolling-latest` privileged Docker test has been removed:
-it did not establish compatibility with a reproducible VyOS build.
+Run this on Linux:
 
-Bootstrap HTTPS with the current `service https api rest`,
-`service https api keys id provider-test key ...`, `service https listen-address ...`,
-and `service https certificates certificate ...` syntax. Import a test-only
-certificate/key into `pki certificate`; the certificate must have a SAN matching
-the endpoint. Never use a production configuration or API key for tests.
+```sh
+.ci/acceptance.sh
+```
 
-The checked-in config.boot is a minimal seed, not a complete network/PKI setup.
-Do not boot or test it against a production-connected NIC.
+The command does the setup itself. It downloads the public VyOS
+**2026.10.22-0026-rolling** ISO, verifies the checked-in SHA256, boots a disposable
+QEMU VM, creates a temporary HTTPS certificate and API key, and runs all three
+Terraform acceptance tests. Native console checks compare active and saved
+configuration after each create/update and verify destroy cleanup plus an
+unrelated sentinel. The VM is stopped and its temporary files removed on success,
+failure, or cancellation.
 
-On a prepared host runner, set `VYOS_ENDPOINT`, `VYOS_API_KEY`,
-`VYOS_CA_CERTIFICATE_FILE`, and `VYOS_LAB_EXEC`, then run `.ci/acceptance.sh`.
-`VYOS_LAB_EXEC` is the absolute path of a trusted executable wrapper that enters
-only the isolated client network namespace and executes its arguments. It must
-preserve the working directory and these environment variables, and share the
-host filesystem paths containing the prebuilt binaries and CA bundle.
+No existing router, production configuration, API key, repository secret,
+self-hosted runner or separate lab setup is needed. The former mutable
+`foltik/vyos:rolling-latest` test has been replaced with this complete pinned-VM
+setup. A pinned container image could also be reproducible; the VM route matches
+the actual VyOS build validated by this patch.
 
-The script builds the test binary on the host, then calls the wrapper to check
-the pinned VM version and execute the binary in the offline network.
-`TF_ACC_TERRAFORM_PATH` can point to a preinstalled Terraform executable. For
-manual use, prebuild with `go test -c -o /tmp/provider-tests ./internal/provider`
-and run `.ci/acceptance.sh --inside-lab /tmp/provider-tests` from inside the
-isolated namespace with the endpoint/key/CA/Terraform environment set.
+## Requirements
 
-Ordinary CI runs deterministic fake-server and race tests. Real acceptance is a
-separate manually dispatched workflow targeting a prepared `vyos-isolated-lab`
-self-hosted runner and environment. The host runner needs GitHub access, while its wrapper isolates the test process
-with a disposable pinned VM and no production connection. Endpoint/CA/wrapper
-paths are environment variables;
-the test key is an environment secret. A hosted GitHub runner cannot reach this
-local lab. Acceptance does not silently skip when its required endpoint is absent.
+Go >= 1.26, Terraform (CI uses 1.17.1), Python >= 3.11, QEMU x86, xorriso and
+OpenSSL. On Ubuntu, install the VM tools with:
 
-Tests use `firewall ipv4 name TF-PROVIDER-TEST` and the SSH host-validation
-flag; these must be initially absent. They create, import, update, and destroy
-configuration. Native active/saved checks and explicit saved-file reload are
-additional integration checks; see VALIDATION.md for this patch's actual evidence.
-A live VM booted with `nopersistence` does not prove cold-reboot persistence.
+```sh
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso openssl
+```
+
+QEMU itself runs without root. It uses KVM when `/dev/kvm` is accessible and falls
+back to software emulation otherwise. No TAP interface, host bridge, Docker or
+privileged container is used. QEMU's `restrict=on` user network blocks guest
+connections to the host and outside networks; the only explicit forward is the
+HTTPS API, bound to host loopback. TLS verification remains enabled.
+
+The host needs Internet access for the ISO and dependencies. The guest has no
+Internet requirement. ISO bytes are verified even after a cache hit; boot files
+are extracted afresh from that verified ISO. Download failure, checksum mismatch,
+wrong API version, failed native checks or failed Terraform tests fail the job.
+
+## GitHub CI
+
+The `Pinned VyOS acceptance` workflow runs automatically for pull requests and
+pushes to `main`, and can also be started manually. It uses a standard
+`ubuntu-24.04` GitHub-hosted runner, installs its own tools and caches the ISO by
+checksum. It uploads diagnostic logs and a result JSON on success or failure.
+No custom runner label, environment, credentials or wrapper needs provisioning.
+
+The job allows 40 minutes, including download/build and software-emulation boot
+when KVM is unavailable. The guest boot timeout is 10 minutes and the acceptance
+suite timeout is 20 minutes. Diagnostic output is under `.ci-results/`; private
+seed/certificate files are kept separately in a temporary directory.
+
+Local overrides:
+
+- `TF_ACC_TERRAFORM_PATH`: an existing Terraform executable.
+- `VYOS_CI_CACHE`: ISO cache directory (default `.ci-cache`).
+- `VYOS_CI_OUTPUT`: diagnostic directory (default `.ci-results`).
+- `VYOS_CI_ACCEL`: `auto`, `kvm` or `tcg` (default `auto`).
+
+These overrides do not select an existing router. The runner always creates its
+own endpoint and test credentials, overriding inherited provider settings.
+For advanced use, `go test` with `TF_ACC=1` can still target an existing disposable
+lab directly; that bypasses this VM setup and requires the usual provider settings.
+
+Run the runner's checksum/isolation unit tests with:
+
+```sh
+python3 -m unittest discover -s .ci -p 'test_*.py' -v
+```
+
+The ISO boots live with `nopersistence`. Active/saved checks establish save-file
+behavior within the running VM; they do not establish cold-reboot persistence.
+See [../VALIDATION.md](../VALIDATION.md) for the actual run evidence.

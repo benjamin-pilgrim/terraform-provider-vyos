@@ -46,8 +46,8 @@ runtime operations confirm that the separate `value` payload field is accepted.
 
 Integration used Terraform **1.17.0**. Final scripted acceptance used **1.17.1**,
 downloaded from HashiCorp and verified against its official SHA256 manifest.
-The prepared-host / isolated-execution path in `.ci/acceptance.sh` is exercised
-using a local lab adapter; the GitHub-hosted workflow itself was not run remotely.
+Those original runs used a local lab adapter. The self-contained replacement
+was subsequently tested as described below.
 
 | Real scenario | Result |
 | --- | --- |
@@ -77,6 +77,27 @@ mode 0600. The native CLI account therefore loaded an owned copy, checked
 byte-for-byte against the original before reload; file content was not modified.
 Both custom and default saved files were tested against contradictory unsaved
 active configuration.
+
+## Self-contained hosted-CI replacement
+
+`.ci/acceptance.sh` now builds its test binary, verifies the public ISO SHA256,
+boots its own QEMU VM, configures temporary HTTPS credentials, executes all three
+acceptance tests and stops the VM. No prepared router or self-hosted runner is
+required. GitHub uses the same command on `ubuntu-24.04`; its current remote
+result is recorded in the checks on PR #54.
+
+Local KVM execution with Terraform 1.17.1: **PASS**, all three tests executed
+(12.45s / 13.61s / 9.49s). Nine native assertions checked active and saved
+configuration: baseline sentinel, five create/update checkpoints, two destroyed
+paths absent, and sentinel preserved. The HTTPS API reported the exact pinned
+build. The result recorded test exit 0 and VM shutdown.
+
+A deliberately failing test executable also failed the runner after successful
+VM/API setup; the VM stopped and its PID was confirmed absent. Checksum tests
+cover downloads, cache tampering and rejection before VM start. The isolation
+test verifies restricted user networking, loopback-only HTTPS forwarding,
+read-only ISO drives and live `nopersistence` boot. All four Python tests pass.
+The updated Go race suite and actionlint also pass.
 
 ## Fixture refinements and limits
 

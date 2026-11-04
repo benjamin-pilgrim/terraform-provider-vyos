@@ -1,19 +1,16 @@
-# Explicitly dispatched only: never run untrusted PR code on a lab runner.
 name: Pinned VyOS acceptance
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
 permissions:
   contents: read
 jobs:
   acceptance:
-    runs-on: [self-hosted, vyos-isolated-lab]
-    environment: vyos-isolated-lab
-    timeout-minutes: 20
-    env:
-      VYOS_LAB_EXEC: ${{ vars.VYOS_LAB_EXEC }}
-      VYOS_ENDPOINT: ${{ vars.VYOS_ENDPOINT }}
-      VYOS_CA_CERTIFICATE_FILE: ${{ vars.VYOS_CA_CERTIFICATE_FILE }}
-      VYOS_API_KEY: ${{ secrets.VYOS_API_KEY }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0
@@ -25,4 +22,23 @@ jobs:
         with:
           terraform_version: '1.17.1'
           terraform_wrapper: false
-      - run: .ci/acceptance.sh
+      - name: Install VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso openssl
+          if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
+      - name: Cache pinned ISO
+        uses: actions/cache@v6.1.0
+        with:
+          path: .ci-cache/*.iso
+          key: vyos-iso-438c1139a7e929474e8ca963547c0b10da85569faea4e5e656fc1d1bc3a1e34f
+      - name: Run disposable pinned VM acceptance
+        run: .ci/acceptance.sh
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: vyos-acceptance-${{ github.run_id }}
+          path: .ci-results/
+          if-no-files-found: warn
+          retention-days: 7

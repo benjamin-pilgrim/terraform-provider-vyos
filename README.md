@@ -135,7 +135,9 @@ go test -race -count=1 ./...
 go generate ./...
 ```
 
-Real tests require `TF_ACC=1` and a disposable router; see [.ci/README.md](.ci/README.md).
+Run `.ci/acceptance.sh` to automatically boot a disposable pinned VM and run real
+acceptance tests; see [.ci/README.md](.ci/README.md). GitHub CI runs the same command
+on a standard hosted runner, without external lab setup or secrets.
 The regular suite uses deterministic fake HTTP/TLS servers and covers persistence,
 HTTP/API errors, drift refresh, concurrency, input validation and failure state.
 See [VALIDATION.md](VALIDATION.md) for actual lab evidence and

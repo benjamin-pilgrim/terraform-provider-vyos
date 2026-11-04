@@ -36,3 +36,8 @@ website/vendor
 
 # Exclude built binary
 /terraform-provider-vyos
+
+# Disposable acceptance VM download cache and diagnostic output
+.ci-cache/
+.ci-results/
+__pycache__/
