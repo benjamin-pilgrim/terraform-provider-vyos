@@ -240,7 +240,7 @@ func TestOwnershipAndScalarTraversal(t *testing.T) {
 		t.Fatal("overlapping child ownership accepted")
 	}
 	vc = New(&Client{HTTP: s.Client(), Endpoint: s.URL, Key: "test"}, false, "")
-	if _, err := vc.Show(context.Background(), "node child"); err != nil {
+	if _, err := vc.Show(context.Background(), "node existing"); err != nil {
 		t.Fatal(err)
 	}
 	if err := vc.Update(context.Background(), "node", map[string]any{}); err == nil {
@@ -292,5 +292,71 @@ func TestConcurrentCreatesCannotAdoptSamePath(t *testing.T) {
 	}
 	if success != 1 || mutations != 1 {
 		t.Fatalf("%d successful creates and %d mutations", success, mutations)
+	}
+}
+
+func TestDeletedPathsDoNotBlockReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name, oldPath, newPath string
+		present                bool
+		refreshOnly            bool
+	}{
+		{"parent to child", "node", "node child", true, false},
+		{"child to parent", "node child", "node", true, false},
+		{"already absent", "node", "node child", false, false},
+		{"absent on refresh", "node", "node child", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			present := tc.present
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/retrieve" {
+					if present {
+						fmt.Fprint(w, `{"success":true,"data":{"node":{"child":{}}}}`)
+					} else {
+						fmt.Fprint(w, `{"success":true,"data":{}}`)
+					}
+					return
+				}
+				if r.URL.Path == "/configure" {
+					present = false
+				}
+				fmt.Fprint(w, `{"success":true,"data":null}`)
+			}))
+			defer s.Close()
+			vc := New(&Client{HTTP: s.Client(), Endpoint: s.URL, Key: "test"}, false, "")
+			ctx := context.Background()
+			if tc.refreshOnly {
+				if _, err := vc.Show(ctx, tc.oldPath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := vc.Delete(ctx, tc.oldPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := vc.Set(ctx, tc.newPath, map[string]any{}); err != nil {
+				t.Fatalf("replacement rejected after old path disappeared: %v", err)
+			}
+		})
+	}
+}
+
+func TestFailedDeleteKeepsOwnership(t *testing.T) {
+	for _, failure := range []string{"retrieve", "configure", "config-file"} {
+		t.Run(failure, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/"+failure {
+					fmt.Fprint(w, `{"success":false}`)
+				} else {
+					fmt.Fprint(w, `{"success":true,"data":{"node":{"child":{}}}}`)
+				}
+			}))
+			defer s.Close()
+			vc := New(&Client{HTTP: s.Client(), Endpoint: s.URL, Key: "test"}, false, "")
+			if err := vc.Delete(context.Background(), "node"); err == nil {
+				t.Fatal("failed delete accepted")
+			}
+			if err := vc.Set(context.Background(), "node child", map[string]any{}); err == nil || !strings.Contains(err.Error(), "overlapping") {
+				t.Fatalf("failed delete released ownership: %v", err)
+			}
+		})
 	}
 }

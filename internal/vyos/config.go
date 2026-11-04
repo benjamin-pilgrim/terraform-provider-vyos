@@ -64,6 +64,7 @@ func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
 }
 
 // claim rejects ancestor/descendant ownership within this provider instance.
+// Claims are released after successful deletion or a read confirms absence.
 // Exact duplicate ownership and other provider instances require configuration
 // discipline: Terraform does not expose resource addresses at this boundary.
 func (vc *VyosConfig) claim(path string) error {
@@ -89,7 +90,11 @@ func (vc *VyosConfig) Show(ctx context.Context, path string) (any, error) {
 	if err := vc.claim(path); err != nil {
 		return nil, err
 	}
-	return vc.show(ctx, components)
+	value, err := vc.show(ctx, components)
+	if err == nil && value == nil {
+		delete(vc.managedPaths, path)
+	}
+	return value, err
 }
 
 // AppliedError means the active commit succeeded but persistence failed or could
@@ -210,6 +215,7 @@ func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode s
 		return errors.New("configuration path already exists; import it or select a narrower unowned path")
 	}
 	if mode == "delete" && current == nil {
+		delete(vc.managedPaths, path)
 		return nil
 	}
 	if mode != "create" && current != nil {
@@ -220,7 +226,13 @@ func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode s
 			return err
 		}
 	}
-	return vc.save(ctx)
+	if err := vc.save(ctx); err != nil {
+		return err
+	}
+	if mode == "delete" {
+		delete(vc.managedPaths, path)
+	}
+	return nil
 }
 
 func (vc *VyosConfig) Set(ctx context.Context, path string, value any) error {
