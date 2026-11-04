@@ -58,13 +58,15 @@ use the JSON shape returned by the VyOS API:
   significant; match the order returned by your router. No schema-wide coercion
   of numeric/bool values or router-generated defaults is attempted.
 
-Import with `terraform import vyos_config.ingress_rules 'firewall ipv4 name TUNNEL-INGRESS'`.
-After import, set `value` to the complete desired subtree before applying. For an
-immediate no-op, use `jsonencode` with the router's exact JSON shape. Import has no
-prior user value to preserve: alternate JSON whitespace, omitted-null members,
-or scalar/singleton-list representations can require one reconciliation apply
-before subsequent plans become no-ops. Refresh preserves equivalent formatting
-once that desired value has been recorded in state.
+To manage existing VyOS settings with Terraform, import their path:
+
+```sh
+terraform import vyos_config.ingress_rules 'firewall ipv4 name TUNNEL-INGRESS'
+```
+
+Then set `value` to all settings you want to keep at that path. Run
+`terraform plan` and review the changes before applying. Settings left out of
+`value` will be removed when you apply.
 
 ## Persistence and operational limits
 
