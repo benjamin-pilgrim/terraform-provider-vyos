@@ -109,6 +109,21 @@ uploading the hidden diagnostic directory; the initial successful run's evidence
 is in its job log. Local software emulation took nearly the full ten-minute boot budget, so KVM
 is now required explicitly instead of advertising that fallback.
 
+## Latest rolling release coverage
+
+CI now resolves the latest official `vyos/vyos-nightly-build` release once per
+run, then uses that exact dated version and published SHA256 throughout cache
+verification, boot and HTTPS API version checks. The uploaded `build.json`
+records the selected version and checksum; `result.json` records test/native
+assertions and cleanup. `VYOS_CI_BUILD` can replay a recorded build, or
+`VYOS_CI_RELEASE` can select a dated tag. The dated evidence above remains a
+record of its original runs, rather than a restriction to that version.
+
+All nine runner unit tests pass, including release resolution, missing digest,
+unexpected download URL, malformed manifest, checksum, KVM and isolation checks.
+Workflow lint, shell syntax and diff checks pass. The latest hosted test evidence
+is linked from PR #54.
+
 ## Fixture refinements and limits
 
 The first combined acceptance run's 110-second harness limit was too short;

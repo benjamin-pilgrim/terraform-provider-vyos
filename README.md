@@ -1,8 +1,8 @@
 # Terraform Provider VyOS
 
-A Terraform Plugin Framework provider for the VyOS HTTPS API. This patch is
-validated against **VyOS 2026.10.22-0026-rolling**; other versions need their own
-acceptance run. Build with Go >= 1.26.0. The integration CLI is Terraform 1.17.0; final acceptance and CI target 1.17.1.
+A Terraform Plugin Framework provider for the VyOS HTTPS API. CI tests the latest
+official VyOS rolling release and records the exact build and checksum for each
+run. Build with Go >= 1.26.0. Acceptance tests and CI use Terraform 1.17.1.
 
 ```hcl
 terraform {
@@ -135,7 +135,7 @@ go test -race -count=1 ./...
 go generate ./...
 ```
 
-Run `.ci/acceptance.sh` to automatically boot a disposable pinned VM and run real
+Run `.ci/acceptance.sh` to automatically boot a disposable VM of the latest rolling build and run real
 acceptance tests; see [.ci/README.md](.ci/README.md). GitHub CI runs the same command
 on a standard hosted runner, without external lab setup or secrets.
 The regular suite uses deterministic fake HTTP/TLS servers and covers persistence,

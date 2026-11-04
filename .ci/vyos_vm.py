@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Disposable pinned VyOS acceptance VM; Python standard library only."""
+"""Disposable VyOS rolling acceptance VM; Python standard library only."""
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -16,36 +17,88 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = '2026.10.22-0026-rolling'
-NAME = f'vyos-{VERSION}-generic-amd64.iso'
-SHA256 = '438c1139a7e929474e8ca963547c0b10da85569faea4e5e656fc1d1bc3a1e34f'
-URL = f'https://github.com/vyos/vyos-nightly-build/releases/download/{VERSION}/{NAME}'
+
+@dataclass(frozen=True)
+class Build:
+    version: str
+    sha256: str
+
+    def __post_init__(self):
+        if not re.fullmatch(r'\d{4}\.\d{2}\.\d{2}-\d{4}-rolling', self.version):
+            raise ValueError('Expected an exact dated VyOS rolling release')
+        if not re.fullmatch(r'[0-9a-f]{64}', self.sha256):
+            raise ValueError('Expected a published SHA256 digest')
+
+    @property
+    def name(self):
+        return f'vyos-{self.version}-generic-amd64.iso'
+
+    @property
+    def url(self):
+        return f'https://github.com/vyos/vyos-nightly-build/releases/download/{self.version}/{self.name}'
+
+    def write(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'version': self.version, 'sha256': self.sha256}, indent=2) + '\n')
+
+    @classmethod
+    def read(cls, path):
+        return cls(**json.loads(path.read_text()))
+
+
+def resolve_build(release='latest'):
+    # Resolve once; downloads, cache verification and /info use this exact build.
+    if release != 'latest' and not re.fullmatch(r'\d{4}\.\d{2}\.\d{2}-\d{4}-rolling', release):
+        raise ValueError('Expected latest or an exact dated VyOS rolling release')
+    suffix = 'latest' if release == 'latest' else 'tags/' + release
+    request = urllib.request.Request(
+        'https://api.github.com/repos/vyos/vyos-nightly-build/releases/' + suffix,
+        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'vyos-provider-acceptance'})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        metadata = json.load(response)
+    version = metadata['tag_name']
+    if release != 'latest' and version != release:
+        raise ValueError('Release metadata returned a different version')
+    if metadata.get('draft') or metadata.get('prerelease'):
+        raise ValueError('Expected a published rolling release')
+    name = f'vyos-{version}-generic-amd64.iso'
+    assets = [asset for asset in metadata['assets'] if asset['name'] == name]
+    if len(assets) != 1:
+        raise ValueError('Expected exactly one generic amd64 ISO')
+    digest = assets[0].get('digest') or ''
+    if not digest.startswith('sha256:'):
+        raise ValueError('ISO has no published SHA256 digest')
+    build = Build(version, digest.removeprefix('sha256:'))
+    if assets[0]['browser_download_url'] != build.url:
+        raise ValueError('Unexpected ISO download URL')
+    return build
+
+
 SENTINEL = ['firewall', 'ipv4', 'name', 'TF-CI-SENTINEL']
 
 
-def verify_image(path):
+def verify_image(path, build):
     with path.open('rb') as source:
         digest = hashlib.file_digest(source, 'sha256').hexdigest()
-    if digest != SHA256:
+    if digest != build.sha256:
         raise RuntimeError('VyOS ISO checksum mismatch')
 
 
-def fetch(cache):
+def fetch(cache, build):
     cache.mkdir(parents=True, exist_ok=True)
-    image = cache / NAME
+    image = cache / build.name
     if image.exists():
-        verify_image(image)
+        verify_image(image, build)
         return image
     temporary = image.with_suffix('.part')
     try:
-        with urllib.request.urlopen(URL, timeout=60) as source, temporary.open('wb') as target:
+        with urllib.request.urlopen(build.url, timeout=60) as source, temporary.open('wb') as target:
             while block := source.read(1024 * 1024):
                 target.write(block)
-        verify_image(temporary)
+        verify_image(temporary, build)
         temporary.replace(image)
     finally:
         temporary.unlink(missing_ok=True)
@@ -244,14 +297,14 @@ def make_seed(state, key):
     return iso, seed / 'api.pem'
 
 
-def api_info(endpoint, certificate):
+def api_info(endpoint, certificate, build):
     context = ssl.create_default_context(cafile=str(certificate))
     # Explicit proxy-free opener; no existing provider endpoint/key is reused.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                         urllib.request.HTTPSHandler(context=context))
     with opener.open(endpoint + '/info?version=true', timeout=10) as response:
         info = json.load(response)
-    if not info.get('success') or info['data']['version'] != VERSION:
+    if not info.get('success') or info['data']['version'] != build.version:
         raise RuntimeError('API reports a different VyOS build')
     return info['data']['version']
 
@@ -259,11 +312,13 @@ def api_info(endpoint, certificate):
 def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    image = fetch(args.cache.resolve())
+    build = Build.read(args.build)
+    build.write(output / 'build.json')
+    image = fetch(args.cache.resolve(), build)
     if not os.access('/dev/kvm', os.R_OK | os.W_OK):
         raise RuntimeError('KVM is required: /dev/kvm must be readable and writable')
-    print(f'Verified VyOS {VERSION}; accelerator=kvm', flush=True)
-    result = {'version': VERSION, 'iso_sha256': SHA256, 'accelerator': 'kvm', 'passed': False}
+    print(f'Verified VyOS {build.version}; accelerator=kvm', flush=True)
+    result = {'version': build.version, 'iso_sha256': build.sha256, 'accelerator': 'kvm', 'passed': False}
     process = console = checks = tests = None
     with tempfile.TemporaryDirectory(prefix='vyos-ci-') as temporary:
         state = Path(temporary)
@@ -293,7 +348,7 @@ def run(args):
                 deadline = time.monotonic() + 120
                 while True:
                     try:
-                        result['api_version'] = api_info(endpoint, certificate)
+                        result['api_version'] = api_info(endpoint, certificate, build)
                         break
                     except (OSError, ValueError):
                         if time.monotonic() > deadline:
@@ -371,9 +426,15 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='action', required=True)
+    resolve = commands.add_parser('resolve')
+    resolve.add_argument('--release', default='latest')
+    resolve.add_argument('--output', type=Path, required=True)
+    resolve.add_argument('--github-output', type=Path)
     download = commands.add_parser('fetch')
+    download.add_argument('--build', type=Path, required=True)
     download.add_argument('--cache', type=Path, default=Path('.ci-cache'))
     execute = commands.add_parser('run')
+    execute.add_argument('--build', type=Path, required=True)
     execute.add_argument('--cache', type=Path, default=Path('.ci-cache'))
     execute.add_argument('--output', type=Path, default=Path('.ci-results'))
     execute.add_argument('--test-binary', type=Path, required=True)
@@ -382,8 +443,15 @@ def main():
     check.add_argument('path')
     check.add_argument('value')
     args = parser.parse_args()
-    if args.action == 'fetch':
-        print(fetch(args.cache.resolve()))
+    if args.action == 'resolve':
+        build = resolve_build(args.release)
+        build.write(args.output)
+        if args.github_output:
+            with args.github_output.open('a') as target:
+                target.write(f'sha256={build.sha256}\n')
+        print(f'Resolved VyOS {build.version}; sha256={build.sha256}', flush=True)
+    elif args.action == 'fetch':
+        print(fetch(args.cache.resolve(), Build.read(args.build)))
     elif args.action == 'check':
         check_client(args.path, args.value)
     else:

@@ -1,4 +1,4 @@
-name: Pinned VyOS acceptance
+name: VyOS rolling acceptance
 on:
   workflow_dispatch:
   pull_request:
@@ -27,12 +27,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso openssl
           if [ -e /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
-      - name: Cache pinned ISO
+      - name: Resolve latest official rolling build
+        id: vyos
+        run: python3 .ci/vyos_vm.py resolve --output "$RUNNER_TEMP/vyos-build.json" --github-output "$GITHUB_OUTPUT"
+      - name: Cache resolved ISO
         uses: actions/cache@v6.1.0
         with:
           path: .ci-cache/*.iso
-          key: vyos-iso-438c1139a7e929474e8ca963547c0b10da85569faea4e5e656fc1d1bc3a1e34f
-      - name: Run disposable pinned VM acceptance
+          key: vyos-iso-${{ steps.vyos.outputs.sha256 }}
+      - name: Run disposable rolling VM acceptance
+        env:
+          VYOS_CI_BUILD: ${{ runner.temp }}/vyos-build.json
         run: .ci/acceptance.sh
       - name: Upload test diagnostics
         if: always()
