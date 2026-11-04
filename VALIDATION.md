@@ -96,8 +96,18 @@ A deliberately failing test executable also failed the runner after successful
 VM/API setup; the VM stopped and its PID was confirmed absent. Checksum tests
 cover downloads, cache tampering and rejection before VM start. The isolation
 test verifies restricted user networking, loopback-only HTTPS forwarding,
-read-only ISO drives and live `nopersistence` boot. All four Python tests pass.
-The updated Go race suite and actionlint also pass.
+read-only ISO drives and live `nopersistence` boot. All five Python tests pass, including failure before VM start when KVM is unavailable.
+The updated Go race suite and actionlint also pass. A cancellation probe also
+confirmed the owned test process and VM were both absent afterward.
+
+GitHub-hosted execution: **PASS**, run
+[41899711204](https://github.com/benjamin-pilgrim/terraform-provider-vyos/actions/runs/41899711204).
+The standard Ubuntu runner used KVM and executed all three tests (4.51s / 4.98s /
+2.75s), native active/saved checks, destroy/sentinel checks and VM cleanup. The
+normal test and documentation-generation jobs also passed. A follow-up enables
+uploading the hidden diagnostic directory; the initial successful run's evidence
+is in its job log. Local software emulation took nearly the full ten-minute boot budget, so KVM
+is now required explicitly instead of advertising that fallback.
 
 ## Fixture refinements and limits
 

@@ -23,15 +23,16 @@ the actual VyOS build validated by this patch.
 ## Requirements
 
 Go >= 1.26, Terraform (CI uses 1.17.1), Python >= 3.11, QEMU x86, xorriso and
-OpenSSL. On Ubuntu, install the VM tools with:
+OpenSSL, with hardware virtualization available through a readable/writable
+`/dev/kvm`. On Ubuntu, install the VM tools with:
 
 ```sh
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso openssl
 ```
 
-QEMU itself runs without root. It uses KVM when `/dev/kvm` is accessible and falls
-back to software emulation otherwise. No TAP interface, host bridge, Docker or
+QEMU itself runs without root and requires KVM. The runner fails clearly when
+`/dev/kvm` is unavailable; local software emulation took nearly the full 10-minute boot budget. No TAP interface, host bridge, Docker or
 privileged container is used. QEMU's `restrict=on` user network blocks guest
 connections to the host and outside networks; the only explicit forward is the
 HTTPS API, bound to host loopback. TLS verification remains enabled.
@@ -49,8 +50,7 @@ pushes to `main`, and can also be started manually. It uses a standard
 checksum. It uploads diagnostic logs and a result JSON on success or failure.
 No custom runner label, environment, credentials or wrapper needs provisioning.
 
-The job allows 40 minutes, including download/build and software-emulation boot
-when KVM is unavailable. The guest boot timeout is 10 minutes and the acceptance
+The job allows 40 minutes, including download/build and VM boot. The guest boot timeout is 10 minutes and the acceptance
 suite timeout is 20 minutes. Diagnostic output is under `.ci-results/`; private
 seed/certificate files are kept separately in a temporary directory.
 
@@ -59,7 +59,6 @@ Local overrides:
 - `TF_ACC_TERRAFORM_PATH`: an existing Terraform executable.
 - `VYOS_CI_CACHE`: ISO cache directory (default `.ci-cache`).
 - `VYOS_CI_OUTPUT`: diagnostic directory (default `.ci-results`).
-- `VYOS_CI_ACCEL`: `auto`, `kvm` or `tcg` (default `auto`).
 
 These overrides do not select an existing router. The runner always creates its
 own endpoint and test credentials, overriding inherited provider settings.

@@ -40,5 +40,6 @@ jobs:
         with:
           name: vyos-acceptance-${{ github.run_id }}
           path: .ci-results/
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

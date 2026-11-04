@@ -52,12 +52,11 @@ def fetch(cache):
     return image
 
 
-def qemu_command(image, boot, seed, state, port, accelerator):
+def qemu_command(image, boot, seed, state, port):
     # QEMU restrict=on blocks guest traffic to the host and outside networks.
     # Only the explicit HTTPS forward is allowed, bound to host loopback.
     return [
-        'qemu-system-x86_64', '-accel', accelerator,
-        '-cpu', 'host' if accelerator == 'kvm' else 'max',
+        'qemu-system-x86_64', '-accel', 'kvm', '-cpu', 'host',
         '-smp', '2', '-m', '1536', '-display', 'none', '-nodefaults',
         '-no-reboot', '-device', 'virtio-rng-pci',
         '-kernel', str(boot / 'vmlinuz'), '-initrd', str(boot / 'initrd.img'),
@@ -261,11 +260,10 @@ def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     image = fetch(args.cache.resolve())
-    accelerator = args.accel
-    if accelerator == 'auto':
-        accelerator = 'kvm' if os.access('/dev/kvm', os.R_OK | os.W_OK) else 'tcg'
-    print(f'Verified VyOS {VERSION}; accelerator={accelerator}', flush=True)
-    result = {'version': VERSION, 'iso_sha256': SHA256, 'accelerator': accelerator, 'passed': False}
+    if not os.access('/dev/kvm', os.R_OK | os.W_OK):
+        raise RuntimeError('KVM is required: /dev/kvm must be readable and writable')
+    print(f'Verified VyOS {VERSION}; accelerator=kvm', flush=True)
+    result = {'version': VERSION, 'iso_sha256': SHA256, 'accelerator': 'kvm', 'passed': False}
     process = console = checks = tests = None
     with tempfile.TemporaryDirectory(prefix='vyos-ci-') as temporary:
         state = Path(temporary)
@@ -284,7 +282,7 @@ def run(args):
         endpoint = f'https://127.0.0.1:{port}'
         try:
             with (output / 'qemu.log').open('w') as qemu_log, (output / 'serial.log').open('w') as serial_log:
-                process = subprocess.Popen(qemu_command(image, boot, seed, state, port, accelerator),
+                process = subprocess.Popen(qemu_command(image, boot, seed, state, port),
                                            stdout=qemu_log, stderr=subprocess.STDOUT)
                 result['vm_pid'] = process.pid
                 console = Console(state / 'serial.sock', process, serial_log)
@@ -378,7 +376,6 @@ def main():
     execute = commands.add_parser('run')
     execute.add_argument('--cache', type=Path, default=Path('.ci-cache'))
     execute.add_argument('--output', type=Path, default=Path('.ci-results'))
-    execute.add_argument('--accel', choices=['auto', 'kvm', 'tcg'], default='auto')
     execute.add_argument('--test-binary', type=Path, required=True)
     execute.add_argument('--terraform', type=Path, required=True)
     check = commands.add_parser('check')

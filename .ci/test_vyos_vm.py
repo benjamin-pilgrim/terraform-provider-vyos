@@ -43,17 +43,26 @@ class ImageTests(unittest.TestCase):
                     vyos_vm.run(args)
                 start.assert_not_called()
 
+    def test_missing_kvm_fails_before_vm_start(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = type('Args', (), {'output': Path(folder), 'cache': Path(folder)})()
+            with patch('vyos_vm.fetch'), patch('vyos_vm.os.access', return_value=False):
+                with patch('vyos_vm.subprocess.Popen') as start:
+                    with self.assertRaisesRegex(RuntimeError, 'KVM is required'):
+                        vyos_vm.run(args)
+                    start.assert_not_called()
+
 
 class IsolationTests(unittest.TestCase):
     def test_only_loopback_https_forward_is_exposed(self):
         command = vyos_vm.qemu_command(Path('/image.iso'), Path('/boot'), Path('/seed.iso'),
-                                       Path('/state'), 19443, 'tcg')
+                                       Path('/state'), 19443)
         network = command[command.index('-netdev') + 1]
         self.assertEqual(command.count('-netdev'), 1)
         self.assertIn('restrict=on', network)
         self.assertIn('hostfwd=tcp:127.0.0.1:19443-10.0.2.15:443', network)
         self.assertNotIn('tap', network)
-        self.assertNotIn('-enable-kvm', command)
+        self.assertEqual(command[command.index('-accel') + 1], 'kvm')
         disks = [command[i + 1] for i, arg in enumerate(command) if arg == '-drive']
         self.assertEqual(len(disks), 2)
         self.assertTrue(all('media=cdrom,readonly=on' in disk for disk in disks))
