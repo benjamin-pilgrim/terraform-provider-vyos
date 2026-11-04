@@ -16,9 +16,8 @@ unrelated sentinel. The VM is stopped and its temporary files removed on success
 failure, or cancellation.
 
 No existing router, production configuration, API key, repository secret,
-self-hosted runner or separate lab setup is needed. The former mutable
-`foltik/vyos:rolling-latest` test has been replaced with this complete VM setup
-using official VyOS images. Each run records its exact build and checksum in
+self-hosted runner or separate lab setup is needed. Tests use official VyOS
+images. Each run records its exact build and checksum in
 `build.json` and `result.json`. The version is resolved once per run; a new release
 published during a test cannot change its image or expected API version.
 

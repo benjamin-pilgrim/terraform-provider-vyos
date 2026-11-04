@@ -15,7 +15,7 @@
   omit null object members, and compare singleton lists/scalars on refresh.
 - Upgrade Terraform Plugin Framework to 1.19.0 and Plugin Testing to 1.16.0,
   update networking/security dependencies, and require Go 1.26.0 or newer.
-- Replace mutable container acceptance CI with automatic disposable-VM
+- Run automatic disposable-VM
   acceptance against the latest official rolling release, recording its exact build and checksum on GitHub-hosted runners, update firewall/HTTPS examples, and add deterministic HTTP/TLS,
   persistence, concurrency and failure-state tests.
 
