@@ -79,4 +79,3 @@ python3 -m unittest discover -s .ci -p 'test_*.py' -v
 
 The ISO boots live with `nopersistence`. Active/saved checks establish save-file
 behavior within the running VM; they do not establish cold-reboot persistence.
-See [../VALIDATION.md](../VALIDATION.md) for the actual run evidence.

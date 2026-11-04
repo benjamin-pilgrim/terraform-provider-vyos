@@ -128,4 +128,3 @@ acceptance tests; see [.ci/README.md](.ci/README.md). GitHub CI runs the same co
 on a standard hosted runner, without external lab setup or secrets.
 The regular suite uses deterministic fake HTTP/TLS servers and covers persistence,
 HTTP/API errors, drift refresh, concurrency, input validation and failure state.
-See [VALIDATION.md](VALIDATION.md) for actual lab evidence.
