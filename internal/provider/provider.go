@@ -3,13 +3,15 @@ package provider
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
-	"github.com/foltik/vyos-client-go/client"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -35,6 +37,8 @@ type VyOSProviderModel struct {
 	ApiKey     types.String `tfsdk:"api_key"`
 	SkipSaving types.Bool   `tfsdk:"skip_saving"`
 	SaveFile   types.String `tfsdk:"save_file"`
+	CACertFile types.String `tfsdk:"ca_certificate_file"`
+	Insecure   types.Bool   `tfsdk:"insecure"`
 }
 
 func (p *VyOSProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -45,6 +49,8 @@ func (p *VyOSProvider) Metadata(ctx context.Context, req provider.MetadataReques
 func (p *VyOSProvider) Schema(ctx context.Context, request provider.SchemaRequest, response *provider.SchemaResponse) {
 	response.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
+			"ca_certificate_file": schema.StringAttribute{Optional: true, MarkdownDescription: "PEM CA bundle to trust in addition to system roots. May also be set with VYOS_CA_CERTIFICATE_FILE."},
+			"insecure":            schema.BoolAttribute{Optional: true, MarkdownDescription: "Disable certificate verification for isolated development only. Defaults to false. May also be set with VYOS_INSECURE."},
 			"endpoint": schema.StringAttribute{
 				MarkdownDescription: "Endpoint of the VyOS HTTP API",
 				Optional:            true,
@@ -60,7 +66,7 @@ func (p *VyOSProvider) Schema(ctx context.Context, request provider.SchemaReques
 			},
 			"save_file": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Remote file path to save the config too.",
+				MarkdownDescription: "Remote file path to save the configuration to. Does not change the router boot file selection.",
 			},
 		},
 	}
@@ -75,6 +81,11 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
+	for name, unknown := range map[string]bool{"skip_saving": config.SkipSaving.IsUnknown(), "save_file": config.SaveFile.IsUnknown(), "ca_certificate_file": config.CACertFile.IsUnknown(), "insecure": config.Insecure.IsUnknown()} {
+		if unknown {
+			resp.Diagnostics.AddAttributeError(path.Root(name), "Unknown provider setting", "Provider settings must be known before configuring the client.")
+		}
+	}
 	// Configuration values are now available.
 	if config.Endpoint.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
@@ -103,7 +114,7 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	save_file := os.Getenv("VYOS_SAVE_FILE")
 	skip_saving := false
 	skip_saving_str := os.Getenv("VYOS_SKIP_SAVING")
-	if skip_saving_str != "" {
+	if config.SkipSaving.IsNull() && skip_saving_str != "" {
 		var err error = nil
 		skip_saving, err = strconv.ParseBool(skip_saving_str)
 		if err != nil {
@@ -136,7 +147,7 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			path.Root("endpoint"),
 			"Missing VyOS API Endpoint",
 			"The provider cannot create the VyOS API client as there is an missing or empty value for the VyOS API Endpoint. "+
-				"Set the username value in the configuration or use the VYOS_ENDPOINT environment variable. "+
+				"Set the endpoint value in the configuration or use the VYOS_ENDPOINT environment variable. "+
 				"If either is already set, ensure the value is not empty.",
 		)
 	}
@@ -146,7 +157,7 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			path.Root("api_key"),
 			"Missing VyOS API key",
 			"The provider cannot create the VyOS API client as there is an missing or empty value for the VyOS API Key. "+
-				"Set the username value in the configuration or use the VYOS_API_KEY environment variable. "+
+				"Set the API key value in the configuration or use the VYOS_API_KEY environment variable. "+
 				"If either is already set, ensure the value is not empty.",
 		)
 	}
@@ -155,12 +166,29 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	httpClient := &http.Client{Transport: transport, Timeout: 10 * time.Minute}
-
-	apiClient := client.NewWithClient(httpClient, endpoint, api_key)
-	vyosConfig := vyos.New(apiClient, skip_saving, save_file)
+	caFile := os.Getenv("VYOS_CA_CERTIFICATE_FILE")
+	if !config.CACertFile.IsNull() {
+		caFile = config.CACertFile.ValueString()
+	}
+	insecure := false
+	if config.Insecure.IsNull() {
+		if v := os.Getenv("VYOS_INSECURE"); v != "" {
+			var err error
+			insecure, err = strconv.ParseBool(v)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid VYOS_INSECURE", "Expected a boolean.")
+				return
+			}
+		}
+	} else {
+		insecure = config.Insecure.ValueBool()
+	}
+	httpClient, err := newHTTPClient(endpoint, caFile, insecure)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API client configuration", err.Error())
+		return
+	}
+	vyosConfig := vyos.New(&vyos.Client{HTTP: httpClient, Endpoint: endpoint, Key: api_key}, skip_saving, save_file)
 
 	resp.DataSourceData = vyosConfig
 	resp.ResourceData = vyosConfig
@@ -182,4 +210,29 @@ func New(version string) func() provider.Provider {
 			version: version,
 		}
 	}
+}
+
+// HTTPS is required so the API key is never sent over cleartext HTTP. Redirects
+// are rejected to avoid forwarding credentials to another origin or protocol.
+func newHTTPClient(endpoint, caFile string, insecure bool) (*http.Client, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("endpoint must be an HTTPS URL without credentials, query or fragment")
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		roots = x509.NewCertPool()
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read CA certificate file")
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA certificate file contains no PEM certificates")
+		}
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, InsecureSkipVerify: insecure} // explicit development override
+	return &http.Client{Transport: transport, Timeout: 10 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }

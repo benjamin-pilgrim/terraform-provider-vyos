@@ -1,0 +1,28 @@
+# Explicitly dispatched only: never run untrusted PR code on a lab runner.
+name: Pinned VyOS acceptance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: [self-hosted, vyos-isolated-lab]
+    environment: vyos-isolated-lab
+    timeout-minutes: 20
+    env:
+      VYOS_LAB_EXEC: ${{ vars.VYOS_LAB_EXEC }}
+      VYOS_ENDPOINT: ${{ vars.VYOS_ENDPOINT }}
+      VYOS_CA_CERTIFICATE_FILE: ${{ vars.VYOS_CA_CERTIFICATE_FILE }}
+      VYOS_API_KEY: ${{ secrets.VYOS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+          cache: true
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: '1.17.1'
+          terraform_wrapper: false
+      - run: .ci/acceptance.sh

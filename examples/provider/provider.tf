@@ -7,6 +7,7 @@ terraform {
 }
 
 provider "vyos" {
-  endpoint = "https://vyos"
-  api_key  = "abcdefg"
+  endpoint            = "https://router.example.net"
+  ca_certificate_file = "/path/to/router-ca.pem"
+  # Supply VYOS_API_KEY through the execution environment.
 }

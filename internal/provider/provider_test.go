@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"os"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -16,7 +17,9 @@ var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServe
 }
 
 func testAccPreCheck(t *testing.T) {
-	// You can add code here to run prior to any test case execution, for example assertions
-	// about the appropriate environment variables being set are common to see in a pre-check
-	// function.
+	for _, name := range []string{"VYOS_ENDPOINT", "VYOS_API_KEY"} {
+		if os.Getenv(name) == "" {
+			t.Fatalf("%s must point to a disposable isolated VyOS lab", name)
+		}
+	}
 }
