@@ -21,4 +21,4 @@
 
 Resources retain exclusive subtree ownership. No whole-apply transaction,
 commit-confirm rollback, or automatic recovery from save failure is provided.
-See README.md, MAINTENANCE.md and VALIDATION.md for scope and migration details.
+See README.md and VALIDATION.md for scope and migration details.
