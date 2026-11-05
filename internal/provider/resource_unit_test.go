@@ -22,7 +22,7 @@ func TestResourceFailureStateAndRedaction(t *testing.T) {
 	if !sr.Schema.Attributes["value"].IsSensitive() {
 		t.Fatal("value must be sensitive")
 	}
-	model := ConfigResourceModel{Path: types.StringValue("node x"), Value: types.StringValue(`"SECRET"`), Id: types.StringValue("node x")}
+	model := ConfigResourceModel{Path: types.StringValue("node x"), Value: types.DynamicValue(types.StringValue(`"SECRET"`)), Id: types.StringValue("node x")}
 	state := tfsdk.State{Schema: sr.Schema}
 	if d := state.Set(ctx, &model); d.HasError() {
 		t.Fatal(d)

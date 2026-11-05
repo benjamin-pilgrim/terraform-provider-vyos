@@ -17,6 +17,10 @@ func TestConfigureSettings(t *testing.T) {
 		valid bool
 	}{
 		{name: "secure defaults", valid: true},
+		{name: "commit-confirm", attrs: map[string]any{"commit_confirm_minutes": 1}, valid: true},
+		{name: "invalid timer", attrs: map[string]any{"commit_confirm_minutes": -1}},
+		{name: "large timer", attrs: map[string]any{"commit_confirm_minutes": 61}},
+		{name: "unknown timer", attrs: map[string]any{"commit_confirm_minutes": tftypes.UnknownValue}},
 		{name: "environment", env: map[string]string{"VYOS_ENDPOINT": "https://router.example", "VYOS_API_KEY": "test"}, valid: true},
 		{name: "explicit settings override invalid environment", env: map[string]string{"VYOS_INSECURE": "bad", "VYOS_SKIP_SAVING": "bad"}, attrs: map[string]any{"insecure": false, "skip_saving": true}, valid: true},
 		{name: "invalid insecure env", env: map[string]string{"VYOS_INSECURE": "bad"}},

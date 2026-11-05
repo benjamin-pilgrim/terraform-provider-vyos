@@ -1,6 +1,6 @@
 resource "vyos_config" "test" {
   path = "firewall ipv4 name TUNNEL-INGRESS"
-  value = jsonencode({
+  value = {
     default-action = "drop"
     rule = {
       "10" = {
@@ -11,5 +11,5 @@ resource "vyos_config" "test" {
         }
       }
     }
-  })
+  }
 }

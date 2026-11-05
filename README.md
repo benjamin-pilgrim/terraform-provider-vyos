@@ -19,12 +19,12 @@ provider "vyos" {
 
 resource "vyos_config" "ingress_rules" {
   path = "firewall ipv4 name TUNNEL-INGRESS"
-  value = jsonencode({
+  value = {
     "default-action" = "drop"
     rule = {
       "10" = { action = "accept", protocol = "tcp", destination = { port = "443" } }
     }
-  })
+  }
 }
 ```
 
@@ -45,15 +45,17 @@ instances/external writers. `depends_on` orders actions but does not make overla
 ownership safe. Avoid `create_before_destroy` for an unchanged path.
 
 Paths are nonempty, with a single space between components. Object keys are
-individual path components (so tag names inside JSON can include spaces). Values
-use the JSON shape returned by the VyOS API:
+individual path components (so object keys can include spaces). Values accept native
+HCL objects, lists and scalar strings, or existing JSON strings produced by
+`jsonencode`. A string that contains valid supported JSON keeps its legacy JSON
+meaning; wrap it with `jsonencode` if you need that text as a literal scalar:
 
 - Strings configure scalar leaves. Use strings for ports, numbers and booleans.
 - Nonempty lists of strings configure multivalue leaves. Single-element lists and
   their scalar form compare equally on refresh because VyOS may return either.
 - `{}` configures a valueless flag; omitted or null resource `value` defaults to `{}`.
-- Null **object members** are omitted. A top-level JSON `null`, empty lists,
-  nonstring list members, and objects with no effective values are rejected.
+- Null **object members** are omitted. Empty lists, nonstring list members,
+  and objects with no effective values are rejected.
 - Whitespace and object-key order are ignored on refresh. Multivalue list order is
   significant; match the order returned by your router. No schema-wide coercion
   of numeric/bool values or router-generated defaults is attempted.
@@ -77,11 +79,11 @@ resource "vyos_config_batch" "policies" {
   entries = {
     ingress = {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
-      value = jsonencode({ "default-action" = "drop" })
+      value = { "default-action" = "drop" }
     }
     egress = {
       path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = jsonencode({ "default-action" = "accept" })
+      value = { "default-action" = "accept" }
     }
   }
 }
@@ -112,20 +114,20 @@ produce diagnostics and retain state. A path is removed from state only after a
 successful read proves it absent. Existing configuration is never silently adopted
 on create, including existing flags.
 
-There is **no whole-apply transaction, commit-confirm timer, automatic rollback,
-or protection against losing API reachability**. Terraform may finish some resource
-commits before another fails. A commit can succeed and its subsequent save fail;
-the diagnostic distinguishes that case and a failed create retains its identity.
-Restore saving and save explicitly on the router: a later Terraform apply can be a
-no-op because the active configuration already matches. A transport timeout leaves
-the commit result uncertain; inspect active/saved configuration before retrying.
-A lost save response also leaves persistence uncertain; inspect the saved file.
-There are no automatic mutation retries.
+Set `commit_confirm_minutes = 2` in the provider to enable a rollback timer for
+each create, update and destroy. The provider checks a fresh API connection and the changed
+configuration, confirms, verifies again, then saves. If the connection drops or
+verification fails, the operation fails without saving. VyOS can recover when
+the timer expires. Failed timed changes retain state and block early retries
+until the recovery window has passed. This checks router access and configuration, not network
+traffic, and does not make the whole Terraform apply atomic.
 
-For firewall, interface, routing, API or access-control changes, validate in an
-isolated lab first. Keep working console/out-of-band access and stage changes so
-the API remains reachable. Use a separate native VyOS commit-confirm workflow when
-rollback on lost management access is required; this provider does not provide it.
+The default is `0` (disabled). VyOS defaults to rebooting into the saved
+configuration on expiry; `system config-management commit-confirm action reload`
+selects recovery without reboot. A confirmed change can still fail to save;
+restore saving and save explicitly on the router. Lost responses leave the
+result uncertain; inspect the router before retrying. Mutations are not retried
+automatically.
 
 ## TLS and secrets
 

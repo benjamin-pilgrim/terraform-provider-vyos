@@ -25,14 +25,14 @@ func batchModel(t *testing.T, values map[string]string) ConfigBatchModel {
 		if diagnostics.HasError() {
 			t.Fatal(diagnostics)
 		}
-		models[name] = batchEntryModel{Path: list, Value: types.StringValue(value)}
+		models[name] = batchEntryModel{Path: list, Value: types.DynamicValue(types.StringValue(value))}
 		entries[name] = vyos.BatchEntry{Path: components}
 	}
 	identity, err := vyos.BatchIdentity(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapped, diagnostics := types.MapValueFrom(context.Background(), batchEntryType, models)
+	mapped, diagnostics := packBatchModels(context.Background(), models)
 	if diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}
@@ -105,7 +105,7 @@ func TestBatchReadPartialDriftAndPlanIdentity(t *testing.T) {
 		t.Fatal(read.Diagnostics)
 	}
 	var refreshed ConfigBatchModel
-	if diagnostics := read.State.Get(ctx, &refreshed); diagnostics.HasError() || refreshed.ID != model.ID || len(refreshed.Entries.Elements()) != 1 {
+	if diagnostics := read.State.Get(ctx, &refreshed); diagnostics.HasError() || refreshed.ID != model.ID || len(refreshed.Entries.UnderlyingValue().(types.Object).Attributes()) != 1 {
 		t.Fatalf("partial deletion lost identity/surviving state: %v", diagnostics)
 	}
 	for _, changedPaths := range []bool{false, true} {
@@ -150,17 +150,17 @@ func TestBatchValidationAndUnknownValues(t *testing.T) {
 	r := &ConfigBatchResource{}
 	var schema resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &schema)
-	for _, tc := range []string{"valid unknown value", "valid unknown path component", "empty", "invalid JSON", "overlapping", "null entry", "null path component"} {
+	for _, tc := range []string{"valid unknown value", "valid unknown path component", "empty", "invalid value", "overlapping", "null entry", "null path component"} {
 		t.Run(tc, func(t *testing.T) {
 			model := batchModel(t, map[string]string{"a": `"one"`, "b": `{}`})
-			var models map[string]batchEntryModel
-			if diagnostics := model.Entries.ElementsAs(ctx, &models, false); diagnostics.HasError() {
+			models, diagnostics := batchModels(ctx, model.Entries)
+			if diagnostics.HasError() {
 				t.Fatal(diagnostics)
 			}
 			switch tc {
 			case "valid unknown value":
 				entry := models["a"]
-				entry.Value = types.StringUnknown()
+				entry.Value = types.DynamicUnknown()
 				models["a"] = entry
 			case "valid unknown path component":
 				entry := models["a"]
@@ -172,18 +172,22 @@ func TestBatchValidationAndUnknownValues(t *testing.T) {
 				models["a"] = entry
 			case "empty":
 				models = map[string]batchEntryModel{}
-			case "invalid JSON":
+			case "invalid value":
 				entry := models["a"]
-				entry.Value = types.StringValue("not JSON")
+				entry.Value = types.DynamicValue(types.BoolValue(true))
 				models["a"] = entry
 			case "overlapping":
 				entry := models["a"]
 				entry.Path, _ = types.ListValueFrom(ctx, types.StringType, []string{"node"})
 				models["a"] = entry
 			}
-			model.Entries, _ = types.MapValueFrom(ctx, batchEntryType, models)
+			for name, entry := range models {
+				entry.originalPath = nil
+				models[name] = entry
+			}
+			model.Entries, _ = packBatchModels(ctx, models)
 			if tc == "null entry" {
-				model.Entries, _ = types.MapValue(batchEntryType, map[string]attr.Value{"null": types.ObjectNull(batchEntryType.AttrTypes)})
+				model.Entries = types.DynamicValue(types.ObjectValueMust(map[string]attr.Type{"null": legacyBatchEntryType}, map[string]attr.Value{"null": types.ObjectNull(legacyBatchEntryType.AttrTypes)}))
 			}
 			config := tfsdk.Config{Schema: schema.Schema}
 			state := tfsdk.State{Schema: schema.Schema}
@@ -218,5 +222,33 @@ func TestBatchReadFailurePreservesState(t *testing.T) {
 	r.Read(ctx, resource.ReadRequest{State: state}, &response)
 	if !response.Diagnostics.HasError() || !response.State.Raw.Equal(state.Raw) {
 		t.Fatal("failed read discarded prior state")
+	}
+}
+
+func TestBatchDynamicSchemaRejectsMalformedEntries(t *testing.T) {
+	ctx := context.Background()
+	r := &ConfigBatchResource{}
+	var schema resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schema)
+	for name, value := range map[string]any{
+		"not an object": "wrong",
+		"not an entry":  map[string]any{"a": "wrong"},
+		"missing value": map[string]any{"a": map[string]any{"path": []any{"node", "a"}}},
+		"extra field":   map[string]any{"a": map[string]any{"path": []any{"node", "a"}, "value": map[string]any{}, "typo": "wrong"}},
+		"scalar path":   map[string]any{"a": map[string]any{"path": "node a", "value": map[string]any{}}},
+		"empty path":    map[string]any{"a": map[string]any{"path": []any{}, "value": map[string]any{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := ConfigBatchModel{ID: types.StringNull(), Entries: types.DynamicValue(valueFromRouter(value))}
+			state := tfsdk.State{Schema: schema.Schema}
+			if d := state.Set(ctx, &model); d.HasError() {
+				t.Fatal(d)
+			}
+			response := resource.ValidateConfigResponse{}
+			r.ValidateConfig(ctx, resource.ValidateConfigRequest{Config: tfsdk.Config{Schema: schema.Schema, Raw: state.Raw}}, &response)
+			if !response.Diagnostics.HasError() {
+				t.Fatal("malformed entries accepted")
+			}
+		})
 	}
 }

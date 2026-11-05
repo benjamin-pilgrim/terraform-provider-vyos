@@ -1,8 +1,13 @@
 ## Unreleased
 
+- Accept native HCL configuration values while retaining legacy JSON strings and
+  upgrading existing resource state.
+- Add optional `commit_confirm_minutes` for create, update and destroy. Verify
+  router access and configuration before confirmation and saving; leave failed
+  operations unsaved for router timeout recovery.
+
 - Add `vyos_config_batch` for named, disjoint path arrays with one configure/save
   sequence, import support, drift refresh and failed-create cleanup identity.
-
 
 - Fix update persistence: create, update, and delete now share serialized
   configure/save handling, including `save_file` and `skip_saving`.
@@ -23,6 +28,6 @@
   acceptance against the latest official rolling release, recording its exact build and checksum on GitHub-hosted runners, update firewall/HTTPS examples, and add deterministic HTTP/TLS,
   persistence, concurrency and failure-state tests.
 
-Resources retain exclusive subtree ownership. No whole-apply transaction,
-commit-confirm rollback, or automatic recovery from save failure is provided.
+Resources retain exclusive subtree ownership. Commit-confirm is per resource or
+batch; no whole-apply transaction or automatic recovery from save failure is provided.
 See README.md for scope and migration details.

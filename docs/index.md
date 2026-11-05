@@ -34,6 +34,7 @@ provider "vyos" {
 
 - `api_key` (String, Sensitive) API Key for the VyOS HTTP API
 - `ca_certificate_file` (String) PEM CA bundle to trust in addition to system roots. May also be set with VYOS_CA_CERTIFICATE_FILE.
+- `commit_confirm_minutes` (Number) Optional rollback timer for create, update and destroy, in minutes (1–60). Default 0 disables it. Checks a fresh API connection and the changed configuration, confirms, verifies again, then saves. Connection or verification failures fail the operation without saving. Checks router access and configuration, not network traffic or the whole apply.
 - `endpoint` (String) Endpoint of the VyOS HTTP API
 - `insecure` (Boolean) Disable certificate verification for isolated development only. Defaults to false. May also be set with VYOS_INSECURE.
 - `save_file` (String) Remote file path to save the configuration to. Does not change the router boot file selection.

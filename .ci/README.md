@@ -11,8 +11,11 @@ release to an exact dated version and GitHub-published SHA256, downloads and
 verifies that ISO, boots a disposable QEMU VM, creates a temporary HTTPS
 certificate and API key, and runs the
 Terraform acceptance suite. Native console checks compare active and saved
-configuration after creates and updates, including batches, and verify destroy
-cleanup plus an unrelated sentinel. The VM is stopped and its temporary files removed on success,
+configuration after creates and updates, including batches. A connection-loss
+test leaves a deletion unconfirmed and unsaved, waits for actual rollback, then
+retries destroy. The test VM uses the reload commit-confirm action.
+Tests verify destroy cleanup plus an unrelated sentinel. The VM is stopped and
+its temporary files removed on success,
 failure, or cancellation.
 
 No existing router, production configuration, API key, repository secret,

@@ -33,12 +33,13 @@ type VyOSProvider struct {
 
 // VyOSProviderModel describes the provider data model.
 type VyOSProviderModel struct {
-	Endpoint   types.String `tfsdk:"endpoint"`
-	ApiKey     types.String `tfsdk:"api_key"`
-	SkipSaving types.Bool   `tfsdk:"skip_saving"`
-	SaveFile   types.String `tfsdk:"save_file"`
-	CACertFile types.String `tfsdk:"ca_certificate_file"`
-	Insecure   types.Bool   `tfsdk:"insecure"`
+	Endpoint             types.String `tfsdk:"endpoint"`
+	ApiKey               types.String `tfsdk:"api_key"`
+	SkipSaving           types.Bool   `tfsdk:"skip_saving"`
+	SaveFile             types.String `tfsdk:"save_file"`
+	CACertFile           types.String `tfsdk:"ca_certificate_file"`
+	CommitConfirmMinutes types.Int64  `tfsdk:"commit_confirm_minutes"`
+	Insecure             types.Bool   `tfsdk:"insecure"`
 }
 
 func (p *VyOSProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -60,6 +61,7 @@ func (p *VyOSProvider) Schema(ctx context.Context, request provider.SchemaReques
 				Optional:            true,
 				Sensitive:           true,
 			},
+			"commit_confirm_minutes": schema.Int64Attribute{Optional: true, MarkdownDescription: "Optional rollback timer for create, update and destroy, in minutes (1–60). Default 0 disables it. Checks a fresh API connection and the changed configuration, confirms, verifies again, then saves. Connection or verification failures fail the operation without saving. Checks router access and configuration, not network traffic or the whole apply."},
 			"skip_saving": schema.BoolAttribute{
 				Optional:            true,
 				MarkdownDescription: "Set to true to skip saving the config to disk.",
@@ -81,7 +83,7 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
-	for name, unknown := range map[string]bool{"skip_saving": config.SkipSaving.IsUnknown(), "save_file": config.SaveFile.IsUnknown(), "ca_certificate_file": config.CACertFile.IsUnknown(), "insecure": config.Insecure.IsUnknown()} {
+	for name, unknown := range map[string]bool{"commit_confirm_minutes": config.CommitConfirmMinutes.IsUnknown(), "skip_saving": config.SkipSaving.IsUnknown(), "save_file": config.SaveFile.IsUnknown(), "ca_certificate_file": config.CACertFile.IsUnknown(), "insecure": config.Insecure.IsUnknown()} {
 		if unknown {
 			resp.Diagnostics.AddAttributeError(path.Root(name), "Unknown provider setting", "Provider settings must be known before configuring the client.")
 		}
@@ -188,8 +190,14 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		resp.Diagnostics.AddError("Invalid API client configuration", err.Error())
 		return
 	}
+	minutes := config.CommitConfirmMinutes.ValueInt64()
+	if minutes < 0 || minutes > 60 {
+		resp.Diagnostics.AddAttributeError(path.Root("commit_confirm_minutes"), "Invalid commit-confirm timer", "Use 0 to disable or a whole number from 1 to 60 minutes.")
+		return
+	}
 	vyosConfig := vyos.New(&vyos.Client{HTTP: httpClient, Endpoint: endpoint, Key: api_key}, skip_saving, save_file)
 
+	vyosConfig.SetCommitConfirmMinutes(minutes)
 	resp.DataSourceData = vyosConfig
 	resp.ResourceData = vyosConfig
 }

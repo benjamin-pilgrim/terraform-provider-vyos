@@ -228,13 +228,17 @@ func (vc *VyosConfig) MutateBatch(ctx context.Context, entries Batch, mode strin
 		}
 		writes = append(writes, sets[name]...)
 	}
+	desired := entries
+	if mode == "delete" {
+		desired = Batch{}
+		for name, entry := range entries {
+			desired[name] = BatchEntry{Path: entry.Path}
+		}
+	}
 	operations := append(deletes, writes...)
 	if len(operations) > 0 {
-		if _, err := vc.apiClient.request(ctx, "configure", operations); err != nil {
-			return true, err
-		}
-		if err := vc.save(ctx); err != nil {
-			return true, err
+		if attempted, err := vc.configure(ctx, operations, desired); err != nil {
+			return attempted, err
 		}
 	}
 	if mode == "delete" {
