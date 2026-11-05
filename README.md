@@ -68,6 +68,34 @@ Then set `value` to all settings you want to keep at that path. Run
 `terraform plan` and review the changes before applying. Settings left out of
 `value` will be removed when you apply.
 
+## Batch related changes
+
+Use `vyos_config_batch` to manage several disjoint paths with one commit and save:
+
+```hcl
+resource "vyos_config_batch" "policies" {
+  entries = {
+    ingress = {
+      path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
+      value = jsonencode({ "default-action" = "drop" })
+    }
+    egress = {
+      path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
+      value = jsonencode({ "default-action" = "accept" })
+    }
+  }
+}
+```
+
+Each entry owns its complete subtree. Paths must not overlap other entries or
+resources. Value changes update the batch; changing entry names or paths replaces
+it. Provider saving settings also apply to batches. Use `depends_on` between
+batches when one needs settings created by another.
+VyOS can partially apply a failed request across components. A failed batch
+create retains its identity so Terraform can clean up and retry.
+
+See [the batch resource](docs/resources/config_batch.md) for import syntax.
+
 ## Persistence and operational limits
 
 Create, update, and delete commit per resource and then save the **whole active

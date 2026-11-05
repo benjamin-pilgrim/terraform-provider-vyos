@@ -18,7 +18,7 @@ type VyosConfig struct {
 	skipSaving   bool
 	saveFile     string
 	mutex        sync.Mutex
-	managedPaths map[string]struct{}
+	managedPaths map[string]pathClaim
 }
 
 func New(c *Client, skipSaving bool, saveFile string) *VyosConfig {
@@ -37,7 +37,7 @@ func ParsePath(path string) ([]string, error) {
 	return strings.Split(path, " "), nil
 }
 
-func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
+func (vc *VyosConfig) snapshot(ctx context.Context) (map[string]any, error) {
 	resp, err := vc.apiClient.request(ctx, "retrieve", map[string]any{"op": "showConfig", "path": []string{}})
 	if err != nil {
 		return nil, err
@@ -46,6 +46,18 @@ func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
 	if !ok {
 		return nil, errors.New("unexpected configuration response (expected object)")
 	}
+	return tree, nil
+}
+
+func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
+	tree, err := vc.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return configNode(tree, path)
+}
+
+func configNode(tree map[string]any, path []string) (any, error) {
 	var node any = tree
 	for _, component := range path {
 		m, ok := node.(map[string]any)
@@ -63,21 +75,12 @@ func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
 	return node, nil
 }
 
-// claim rejects ancestor/descendant ownership within this provider instance.
-// Claims are released after successful deletion or a read confirms absence.
-// Exact duplicate ownership and other provider instances require configuration
-// discipline: Terraform does not expose resource addresses at this boundary.
 func (vc *VyosConfig) claim(path string) error {
-	if vc.managedPaths == nil {
-		vc.managedPaths = map[string]struct{}{}
+	components, err := ParsePath(path)
+	if err != nil {
+		return err
 	}
-	for other := range vc.managedPaths {
-		if strings.HasPrefix(path, other+" ") || strings.HasPrefix(other, path+" ") {
-			return errors.New("overlapping resource paths are unsafe; each resource must exclusively own a disjoint subtree")
-		}
-	}
-	vc.managedPaths[path] = struct{}{}
-	return nil
+	return vc.claimPaths([][]string{components}, "")
 }
 
 func (vc *VyosConfig) Show(ctx context.Context, path string) (any, error) {
@@ -92,7 +95,7 @@ func (vc *VyosConfig) Show(ctx context.Context, path string) (any, error) {
 	}
 	value, err := vc.show(ctx, components)
 	if err == nil && value == nil {
-		delete(vc.managedPaths, path)
+		vc.release(components)
 	}
 	return value, err
 }
@@ -215,7 +218,7 @@ func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode s
 		return errors.New("configuration path already exists; import it or select a narrower unowned path")
 	}
 	if mode == "delete" && current == nil {
-		delete(vc.managedPaths, path)
+		vc.release(components)
 		return nil
 	}
 	if mode != "create" && current != nil {
@@ -230,7 +233,7 @@ func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode s
 		return err
 	}
 	if mode == "delete" {
-		delete(vc.managedPaths, path)
+		vc.release(components)
 	}
 	return nil
 }

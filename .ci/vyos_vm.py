@@ -248,7 +248,8 @@ class Checks:
                 try:
                     with connection.makefile('rb') as stream:
                         request = json.loads(stream.readline(1024 * 1024))
-                    result = self.check(request['path'].split(' '), json.loads(request['value']))
+                    path = request['path']
+                    result = self.check(path.split(' ') if isinstance(path, str) else path, json.loads(request['value']))
                     response = {'ok': True, 'message': result}
                 except Exception as error:
                     response = {'ok': False, 'message': str(error)}
@@ -385,7 +386,9 @@ def run(args):
                 if result['test_exit_code'] != 0:
                     raise RuntimeError('Acceptance tests failed; see acceptance.log')
                 for path in [['firewall', 'ipv4', 'name', 'TF-PROVIDER-TEST'],
-                             ['service', 'ssh', 'disable-host-validation']]:
+                             ['service', 'ssh', 'disable-host-validation'],
+                             ['firewall', 'ipv4', 'name', 'TF-PROVIDER-BATCH-A'],
+                             ['firewall', 'ipv4', 'name', 'TF-PROVIDER-BATCH-B']]:
                     checks.check(path, None)
                 checks.check(SENTINEL, {'default-action': 'drop'})
                 print('PASS native destroy cleanup and unrelated sentinel', flush=True)
@@ -439,9 +442,10 @@ def main():
     execute.add_argument('--output', type=Path, default=Path('.ci-results'))
     execute.add_argument('--test-binary', type=Path, required=True)
     execute.add_argument('--terraform', type=Path, required=True)
-    check = commands.add_parser('check')
-    check.add_argument('path')
-    check.add_argument('value')
+    for action in ['check', 'check-array']:
+        check = commands.add_parser(action)
+        check.add_argument('path')
+        check.add_argument('value')
     args = parser.parse_args()
     if args.action == 'resolve':
         build = resolve_build(args.release)
@@ -452,8 +456,8 @@ def main():
         print(f'Resolved VyOS {build.version}; sha256={build.sha256}', flush=True)
     elif args.action == 'fetch':
         print(fetch(args.cache.resolve(), Build.read(args.build)))
-    elif args.action == 'check':
-        check_client(args.path, args.value)
+    elif args.action in ['check', 'check-array']:
+        check_client(json.loads(args.path) if args.action == 'check-array' else args.path, args.value)
     else:
         def interrupt(_number, _frame):
             raise KeyboardInterrupt

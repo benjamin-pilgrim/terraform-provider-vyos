@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Add `vyos_config_batch` for named, disjoint path arrays with one configure/save
+  sequence, import support, drift refresh and failed-create cleanup identity.
+
+
 - Fix update persistence: create, update, and delete now share serialized
   configure/save handling, including `save_file` and `skip_saving`.
 - Refresh active configuration on every read, detect external drift, and retain
