@@ -150,14 +150,70 @@ still be managed normally; select narrower paths such as `service ssh`.
 Unexpected asynchronous acknowledgments also fail without confirmation or saving.
 The accepted change may still execute; inspect the router before retrying.
 
+## Authentication
+
+API-key authentication remains the default. Choose one mode with `auth_mode`
+(or `VYOS_AUTH_MODE`):
+
+| Mode | Credentials | Behavior |
+| --- | --- | --- |
+| `api_key` (default) | `api_key` / `VYOS_API_KEY` | Sends the existing form key on every request; works with older servers. |
+| `bearer` | `bearer_token` / `VYOS_BEARER_TOKEN` | Sends `Authorization: Bearer`. Accepts externally issued OIDC JWTs or a supplied VyOS token. |
+| `api_key_token` | `api_key` / `VYOS_API_KEY` | Exchanges the key at `/token`, caches the returned token, and repeats the exchange before expiry. |
+| `mtls` | `client_certificate_file` / `VYOS_CLIENT_CERTIFICATE_FILE` and `client_key_file` / `VYOS_CLIENT_KEY_FILE` | Loads a PEM certificate chain and matching private key, authenticates via TLS, and sends no API key or bearer token. |
+
+Explicit attributes override their corresponding environment variables, including
+empty strings. Credentials for other modes must be unset; conflicts fail rather
+than silently choosing an identity. For example, unset `VYOS_API_KEY` before using
+bearer or mTLS, or explicitly set `api_key = ""` to override it.
+
+```hcl
+provider "vyos" {
+  endpoint            = "https://router.example.net"
+  ca_certificate_file = "/path/to/router-ca.pem"
+  auth_mode           = "bearer"
+  # Supply VYOS_BEARER_TOKEN in the environment; unset VYOS_API_KEY.
+}
+```
+
+For exchange, use `auth_mode = "api_key_token"` and supply `VYOS_API_KEY`.
+The provider uses VyOS's `data.token` and relative `data.expires_in` response,
+measures expiry from the start of the exchange and refreshes early. Tokens remain
+in process memory. An unsupported `/token` or failed exchange produces an error;
+there is no fallback to key authentication on ordinary API calls.
+An HTTP 401 invalidates the cache for the next operation, which also handles
+router API restarts that rotate the signing secret. The failed request is never
+replayed. Commit-confirm verification and saves use the same authentication,
+including when verification opens fresh connections.
+
+For mTLS, use `auth_mode = "mtls"` and supply both PEM file paths. Server trust is
+still verified separately using system roots or `ca_certificate_file`. Connections
+use **TLS 1.2 only**, matching the current VyOS nginx client-authentication limit.
+Files are loaded when the provider is configured; recreate the provider process
+after rotating them.
+
+The provider treats supplied bearer tokens as opaque credentials. Obtain them
+outside Terraform and ensure they remain valid throughout the run; the provider
+does not log in to an identity provider or refresh externally issued tokens.
+OIDC issuer, JWKS and audience validation are configured on the router.
+
+Bearer, exchange, OIDC and mTLS require a supporting VyOS build. Their actual
+implementation was verified in current rolling source at `d6902e6`; they are
+absent from the inspected public 1.4/1.5 release branches, and private LTS
+backports were not verified. Use a current rolling build with the September 2026
+mTLS header and OIDC audience fixes. See the
+[source verification and version limitations](docs/research/vyos-rest-authentication.md)
+for exact upstream commits and protocol details.
+
 ## TLS and secrets
 
 HTTPS certificate and hostname verification is enabled by default using system
 roots. `ca_certificate_file`/`VYOS_CA_CERTIFICATE_FILE` adds a PEM CA bundle. The
 explicit `insecure=true`/`VYOS_INSECURE=true` override is for isolated development.
-Cleartext endpoints and redirects are rejected, protecting the API key.
+Cleartext endpoints and redirects are rejected for all authentication modes.
+API key and bearer modes allow TLS 1.2 or newer; mTLS requires TLS 1.2.
 
-The API key and resource value are sensitive in Terraform output. **Sensitive
+API keys, bearer tokens and resource values are sensitive in Terraform output. **Sensitive
 values are still stored in state and saved plan files**; use access-controlled,
 encrypted state storage. Moving from older releases marks existing values
 sensitive but does not remove secrets from old state versions or logs. The
