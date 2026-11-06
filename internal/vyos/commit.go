@@ -54,6 +54,17 @@ func (vc *VyosConfig) configure(ctx context.Context, ops []map[string]any, desir
 		}
 		vc.pendingConfirm = false
 	}
+	if vc.confirmMinutes == 0 {
+		partial := false
+		for _, entry := range desired {
+			partial = partial || entry.Partial
+		}
+		if partial {
+			if err := vc.verifyCommit(ctx, desired); err != nil {
+				return true, vc.mutationError(errors.New("include verification failed; use include only for multivalue leaves and inspect the active configuration. Configuration was not saved"))
+			}
+		}
+	}
 	return true, vc.save(ctx)
 }
 
@@ -67,6 +78,29 @@ func (vc *VyosConfig) verifyCommit(ctx context.Context, desired Batch) error {
 	}
 	for name, entry := range desired {
 		value, present := current[name]
+		if entry.Partial {
+			actual, err := listValues(value)
+			if err != nil {
+				return err
+			}
+			set := stringSet(actual)
+			for _, member := range entry.Preserve {
+				if !set[member] {
+					return errors.New("an unrelated list value was changed")
+				}
+			}
+			for _, member := range entry.Include {
+				if !set[member] {
+					return errors.New("an included value is missing")
+				}
+			}
+			for _, member := range entry.Exclude {
+				if set[member] {
+					return errors.New("a removed include value is still present")
+				}
+			}
+			continue
+		}
 		if entry.Value == "" {
 			if present {
 				return errors.New("deleted configuration is still present")

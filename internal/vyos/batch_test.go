@@ -38,7 +38,16 @@ func newBatchFixture(t *testing.T, skip bool, file string) (*VyosConfig, *batchF
 		case "/retrieve":
 			data = fixture.tree
 		case "/configure":
-			if err := json.Unmarshal([]byte(r.FormValue("data")), &fixture.ops); err != nil {
+			raw := []byte(r.FormValue("data"))
+			if strings.HasPrefix(string(raw), "{") {
+				var request struct {
+					Commands []map[string]any `json:"commands"`
+				}
+				if err := json.Unmarshal(raw, &request); err != nil {
+					t.Error(err)
+				}
+				fixture.ops = request.Commands
+			} else if err := json.Unmarshal(raw, &fixture.ops); err != nil {
 				t.Error(err)
 			}
 			for _, op := range fixture.ops {
@@ -52,9 +61,32 @@ func newBatchFixture(t *testing.T, skip bool, file string) (*VyosConfig, *batchF
 				}
 				last := parts[len(parts)-1].(string)
 				if op["op"] == "delete" {
-					delete(node, last)
+					if value, partial := op["value"]; partial {
+						old, _ := listValues(node[last])
+						kept := []string{}
+						for _, item := range old {
+							if item != value {
+								kept = append(kept, item)
+							}
+						}
+						if len(kept) == 0 {
+							delete(node, last)
+						} else {
+							node[last] = kept
+						}
+					} else {
+						delete(node, last)
+					}
 				} else if value, present := op["value"]; present {
-					node[last] = value
+					if node[last] == nil {
+						node[last] = value
+					} else {
+						old, _ := listValues(node[last])
+						if !stringSet(old)[value.(string)] {
+							old = append(old, value.(string))
+						}
+						node[last] = old
+					}
 				} else {
 					node[last] = map[string]any{}
 				}

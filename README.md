@@ -30,14 +30,14 @@ resource "vyos_config" "ingress_rules" {
 
 ## Ownership and values
 
-Each resource **exclusively owns its entire selected subtree**. Updates delete and
+`vyos_config` and batch `value` entries **own their entire selected subtree**. Updates delete and
 rebuild that subtree in one configure request; destroy deletes it. Unrelated
 siblings outside the selected path remain untouched. Anything beneath the path
 that is absent from the desired value is removed on update. Import an existing
 subtree before managing it, including all settings you want to keep, or select a
 narrower path such as one interface description or one firewall rule.
 
-Resource paths must be unique and disjoint, including across modules, states,
+Whole-value paths must be unique and disjoint, including across modules, states,
 provider aliases, and external automation. The provider rejects ancestor/descendant
 overlap observed within a single configured instance. It cannot detect duplicate
 Terraform addresses owning the exact same path, or coordinate independent provider
@@ -72,7 +72,7 @@ Then set `value` to all settings you want to keep at that path. Run
 
 ## Batch related changes
 
-Use `vyos_config_batch` to manage several disjoint paths with one commit and save:
+Use `vyos_config_batch` to group configuration changes into one commit and save:
 
 ```hcl
 resource "vyos_config_batch" "policies" {
@@ -81,20 +81,30 @@ resource "vyos_config_batch" "policies" {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
       value = { "default-action" = "drop" }
     }
-    egress = {
-      path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = { "default-action" = "accept" }
+    dns_clients = {
+      path    = ["service", "dns", "forwarding", "allow-from"]
+      include = ["10.114.0.0/24"]
     }
   }
 }
 ```
 
-Each entry owns its complete subtree. Paths must not overlap other entries or
-resources. Value changes update the batch; changing entry names or paths replaces
-it. Provider saving settings also apply to batches. Use `depends_on` between
-batches when one needs settings created by another.
-VyOS can partially apply a failed request across components. A failed batch
-create retains its identity so Terraform can clean up and retry.
+Each entry uses exactly one of `value` or `include`. `value` owns the complete
+subtree. `include` owns only the listed strings in a multivalue leaf: it restores
+missing values, leaves other values alone, and removes only its own values on
+update or destroy. Existing listed values are adopted. Empty `include` owns no
+values; arrays and sets are accepted, and router ordering is ignored. Use it only
+on multivalue leaves; a scalar leaf cannot safely represent shared list ownership.
+
+Disjoint includes can share a list. Duplicate ownership of a value, or overlap
+with whole-value ownership, is rejected within one provider instance. Changing
+entry names or paths replaces the batch. To switch an existing path between
+`value` and `include`, remove the batch from state without destroying it, then
+import it with the new ownership selectors. Direct mode changes are blocked.
+
+Provider saving and commit-confirm settings apply to both modes. Use `depends_on`
+between batches when one needs settings created by another. Failed attempted
+changes retain ownership for cleanup, including newly attempted includes.
 
 See [the batch resource](docs/resources/config_batch.md) for import syntax.
 
@@ -111,8 +121,8 @@ Use an explicit router save to persist changes already active.
 Configure and save calls are serialized within one provider instance. Reads fetch
 fresh active configuration every time; retrieval/authentication/transport errors
 produce diagnostics and retain state. A path is removed from state only after a
-successful read proves it absent. Existing configuration is never silently adopted
-on create, including existing flags.
+successful read proves it absent. Whole-value configuration must be imported before adoption, including existing
+flags. Include entries adopt only the explicitly listed values.
 
 Set `commit_confirm_minutes = 2` in the provider to enable a rollback timer for
 each create, update and destroy. The provider checks a fresh API connection and the changed
