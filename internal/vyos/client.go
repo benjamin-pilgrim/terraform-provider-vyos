@@ -17,6 +17,9 @@ import (
 type Client struct {
 	HTTP          *http.Client
 	Endpoint, Key string
+	BearerToken   string
+	ExchangeToken bool
+	tokens        tokenCache
 }
 
 func (c *Client) request(ctx context.Context, endpoint string, payload any) (any, error) {
@@ -24,17 +27,36 @@ func (c *Client) request(ctx context.Context, endpoint string, payload any) (any
 	if err != nil {
 		return nil, errors.New("cannot encode API request")
 	}
-	form := url.Values{"key": {c.Key}, "data": {string(data)}}
+	token, err := c.bearer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{"data": {string(data)}}
+	if token == "" && c.Key != "" {
+		form.Set("key", c.Key)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.Endpoint, "/")+"/"+endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, errors.New("invalid API request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("VyOS %s request failed (check connectivity, TLS trust and router logs)", endpoint)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized && c.ExchangeToken {
+		// A router restart rotates its signing secret. Forget the cached token for
+		// the next operation, but do not replay this potentially mutating request.
+		c.tokens.mu.Lock()
+		if c.tokens.token == token {
+			c.tokens.token = ""
+		}
+		c.tokens.mu.Unlock()
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("VyOS %s returned HTTP %d; consult router logs", endpoint, resp.StatusCode)
 	}
