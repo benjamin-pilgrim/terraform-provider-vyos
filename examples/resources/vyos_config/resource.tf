@@ -1,15 +1,15 @@
 resource "vyos_config" "test" {
-  path = "firewall name WAN_LOCAL"
-  value = jsonencode({
+  path = "firewall ipv4 name TUNNEL-INGRESS"
+  value = {
     default-action = "drop"
     rule = {
-      10 = {
-        action = "accept"
-        state = {
-          established = "enable"
-          related     = "enable"
+      "10" = {
+        action   = "accept"
+        protocol = "tcp"
+        destination = {
+          port = "443"
         }
       }
     }
-  })
+  }
 }

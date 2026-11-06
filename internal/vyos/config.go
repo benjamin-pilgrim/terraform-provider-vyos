@@ -2,149 +2,285 @@ package vyos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
+	"sort"
 	"strings"
 	"sync"
-
-	"github.com/foltik/vyos-client-go/client"
+	"unicode"
 )
 
+// VyosConfig serializes reads and complete configure/save sequences for one
+// provider instance. Reads always fetch active config, including external drift.
+// Other provider instances and external writers are not coordinated.
 type VyosConfig struct {
-	apiClient    *client.Client
-	skipSaving   bool
-	saveFile     string
-	mutex        sync.Mutex
-	cachedConfig *map[string]any
+	apiClient      *Client
+	skipSaving     bool
+	pendingConfirm bool
+	confirmMinutes int64
+	saveFile       string
+	mutex          sync.Mutex
+	managedPaths   map[string]pathClaim
 }
 
-func New(apiClient *client.Client, skipSaving bool, saveFile string) *VyosConfig {
-	config := &VyosConfig{
-		skipSaving: skipSaving,
-		saveFile:   saveFile,
-		apiClient:  apiClient,
+func New(c *Client, skipSaving bool, saveFile string) *VyosConfig {
+	return &VyosConfig{apiClient: c, skipSaving: skipSaving, saveFile: saveFile}
+}
+
+func ParsePath(path string) ([]string, error) {
+	if path == "" || strings.Join(strings.Fields(path), " ") != path {
+		return nil, errors.New("path must contain nonempty components separated by single spaces")
 	}
-	return config
-}
-
-func (vc *VyosConfig) SaveIfRequired(ctx context.Context) error {
-	if vc.skipSaving {
-		return nil
-	} else if vc.saveFile == "" {
-		return vc.apiClient.Config.Save(ctx)
-	} else {
-		return vc.apiClient.Config.SaveFile(ctx, vc.saveFile)
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return nil, errors.New("path contains control characters")
+		}
 	}
+	return strings.Split(path, " "), nil
 }
 
-func (vc *VyosConfig) getRemoteConfig(ctx context.Context) (map[string]any, error) {
-	resp, err := vc.apiClient.Request(ctx, "retrieve", map[string]any{
-		"op":   "showConfig",
-		"path": []string{},
-	})
+func (vc *VyosConfig) snapshot(ctx context.Context) (map[string]any, error) {
+	resp, err := vc.apiClient.request(ctx, "retrieve", map[string]any{"op": "showConfig", "path": []string{}})
 	if err != nil {
-		if strings.Contains(err.Error(), "could not fetch config") {
-			// If we get an empty path error, consume it and return nil
-			return nil, nil
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
-
-	obj, ok := resp.(map[string]any)
+	tree, ok := resp.(map[string]any)
 	if !ok {
-		return nil, errors.New("received unexpected repsonse format from server")
+		return nil, errors.New("unexpected configuration response (expected object)")
 	}
-	return obj, nil
+	return tree, nil
 }
 
-func (vc *VyosConfig) GetFullConfig(ctx context.Context) (*map[string]any, error) {
-	vc.mutex.Lock()
-	if vc.cachedConfig == nil {
-		config, err := vc.getRemoteConfig(ctx)
-		if err != nil {
-			vc.mutex.Unlock()
-			return nil, err
+func (vc *VyosConfig) show(ctx context.Context, path []string) (any, error) {
+	tree, err := vc.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return configNode(tree, path)
+}
+
+func configNode(tree map[string]any, path []string) (any, error) {
+	var node any = tree
+	for _, component := range path {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return nil, errors.New("configuration path traverses a scalar or list")
 		}
-		vc.cachedConfig = &config
+		node, ok = m[component]
+		if !ok {
+			return nil, nil
+		}
+		if node == nil {
+			return nil, errors.New("unexpected null configuration node")
+		}
 	}
-	vc.mutex.Unlock()
-	return vc.cachedConfig, nil
+	return node, nil
 }
 
-func (vc *VyosConfig) invalidateConfigCache() {
-	vc.mutex.Lock()
-	vc.cachedConfig = nil
-	vc.mutex.Unlock()
+func (vc *VyosConfig) claim(path string) error {
+	components, err := ParsePath(path)
+	if err != nil {
+		return err
+	}
+	return vc.claimPaths([][]string{components}, "")
 }
 
 func (vc *VyosConfig) Show(ctx context.Context, path string) (any, error) {
-	path_components := strings.Split(path, " ")
-	if path == "" {
-		path_components = []string{}
-	}
-
-	fullConfig, err := vc.GetFullConfig(ctx)
+	components, err := ParsePath(path)
 	if err != nil {
 		return nil, err
 	}
-
-	config, err := getConfigFromPath(*fullConfig, path_components)
-	if err != nil {
+	vc.mutex.Lock()
+	defer vc.mutex.Unlock()
+	if err := vc.claim(path); err != nil {
 		return nil, err
 	}
+	value, err := vc.show(ctx, components)
+	if err == nil && value == nil {
+		vc.release(components)
+	}
+	return value, err
+}
 
-	return config, nil
+// AppliedError means the active commit succeeded but persistence failed or could
+// not be confirmed. Callers
+// must retain the resource identity so a failed create can be cleaned up.
+type AppliedError struct{}
+
+func (*AppliedError) Error() string {
+	return "configuration committed, but saving failed or could not be confirmed. Inspect active and saved configuration, then restore saving and save explicitly on the router; a later Terraform apply may have no changes"
+}
+
+func (vc *VyosConfig) save(ctx context.Context) error {
+	if vc.skipSaving {
+		return nil
+	}
+	payload := map[string]any{"op": "save"}
+	if vc.saveFile != "" {
+		payload["file"] = vc.saveFile
+	}
+	if _, err := vc.apiClient.request(ctx, "config-file", payload); err != nil {
+		return &AppliedError{}
+	}
+	return nil
+}
+
+// Operations uses path arrays, preserving tag names as individual components.
+// null object members are omitted; {} represents a flag. Values must be strings
+// (or nonempty lists of strings), matching the values returned by VyOS.
+func Operations(path []string, value any) ([]map[string]any, error) {
+	var ops []map[string]any
+	var walk func([]string, any) error
+	walk = func(p []string, v any) error {
+		switch x := v.(type) {
+		case map[string]any:
+			if len(x) == 0 {
+				ops = append(ops, map[string]any{"op": "set", "path": p})
+				return nil
+			}
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if k == "" || strings.IndexFunc(k, unicode.IsControl) >= 0 {
+					return errors.New("invalid configuration object key")
+				}
+				if x[k] == nil {
+					continue
+				}
+				child := append(append([]string{}, p...), k)
+				if err := walk(child, x[k]); err != nil {
+					return err
+				}
+			}
+		case string:
+			ops = append(ops, map[string]any{"op": "set", "path": p, "value": x})
+		case []any:
+			if len(x) == 0 {
+				return errors.New("empty lists cannot be configured; omit the member instead")
+			}
+			for _, v := range x {
+				s, ok := v.(string)
+				if !ok {
+					return errors.New("list members must be strings")
+				}
+				ops = append(ops, map[string]any{"op": "set", "path": p, "value": s})
+			}
+		default:
+			return errors.New("configuration values must be objects, strings or nonempty lists of strings; null is only allowed as an omitted object member")
+		}
+		return nil
+	}
+	if err := walk(path, value); err != nil {
+		return nil, err
+	}
+	if len(ops) == 0 {
+		return nil, errors.New("configuration contains no values or flags")
+	}
+	return ops, nil
+}
+
+func DecodeValue(raw string) (any, error) {
+	var v any
+	if json.Unmarshal([]byte(raw), &v) != nil {
+		return nil, errors.New("value must be valid JSON")
+	}
+	if _, err := Operations([]string{"validation"}, v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode string) error {
+	components, err := ParsePath(path)
+	if err != nil {
+		return err
+	}
+	var ops []map[string]any
+	if mode != "delete" {
+		ops, err = Operations(components, value)
+		if err != nil {
+			return err
+		}
+	}
+	vc.mutex.Lock()
+	defer vc.mutex.Unlock()
+	if err := vc.claim(path); err != nil {
+		return err
+	}
+	// Existence check and mutation share the lock, preventing competing creates
+	// from adopting/overwriting each other's configuration.
+	current, err := vc.show(ctx, components)
+	if err != nil {
+		return err
+	}
+	if mode == "create" && current != nil {
+		return errors.New("configuration path already exists; import it or select a narrower unowned path")
+	}
+	if mode == "delete" && current == nil {
+		vc.release(components)
+		return nil
+	}
+	if mode != "create" && current != nil {
+		ops = append([]map[string]any{{"op": "delete", "path": components}}, ops...)
+	}
+	raw := ""
+	if mode != "delete" {
+		encoded, _ := json.Marshal(value)
+		raw = string(encoded)
+	}
+	if _, err := vc.configure(ctx, ops, Batch{"resource": {Path: components, Value: raw}}); err != nil {
+		return err
+	}
+	if mode == "delete" {
+		vc.release(components)
+	}
+	return nil
 }
 
 func (vc *VyosConfig) Set(ctx context.Context, path string, value any) error {
-	vc.invalidateConfigCache()
+	return vc.mutate(ctx, path, value, "create")
+}
 
-	err := vc.apiClient.Config.Set(ctx, path, value)
-	if err != nil {
-		return err
-	}
-
-	err = vc.SaveIfRequired(ctx)
-	if err != nil {
-		return err
-	}
-	return nil
+func (vc *VyosConfig) Update(ctx context.Context, path string, value any) error {
+	return vc.mutate(ctx, path, value, "update")
 }
 
 func (vc *VyosConfig) Delete(ctx context.Context, path string) error {
-	vc.invalidateConfigCache()
-	err := vc.apiClient.Config.Delete(ctx, path)
-	if err != nil {
-		return err
-	}
-
-	err = vc.SaveIfRequired(ctx)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return vc.mutate(ctx, path, nil, "delete")
 }
 
-func (vc *VyosConfig) ApiRequest(ctx context.Context, endpoint string, payload any) (any, error) {
-	return vc.apiClient.Request(ctx, endpoint, payload)
-}
-
-func getConfigFromPath(configTree map[string]interface{}, path_components []string) (rval interface{}, err error) {
-	var ok bool
-
-	if len(path_components) == 0 {
-		return configTree, nil
+// Equivalent preserves a user's formatting and omitted null object members on
+// refresh without suppressing meaningful drift. Lists remain order sensitive.
+func Equivalent(raw string, remote any) bool {
+	v, err := DecodeValue(raw)
+	if err != nil {
+		return false
 	}
-
-	if rval, ok = configTree[path_components[0]]; !ok {
-		return nil, nil
-	} else if len(path_components) == 1 { // we've reached the final path component
-		return rval, nil
-	} else if configTree, ok = rval.(map[string]interface{}); !ok {
-		return nil, fmt.Errorf("malformed configTree at %#v", rval)
-	} else { // 1+ more path components
-		return getConfigFromPath(configTree, path_components[1:])
+	var clean func(any) (any, bool)
+	clean = func(x any) (any, bool) {
+		if list, ok := x.([]any); ok && len(list) == 1 {
+			return clean(list[0])
+		}
+		if m, ok := x.(map[string]any); ok {
+			out := map[string]any{}
+			for k, v := range m {
+				if v != nil {
+					if value, keep := clean(v); keep {
+						out[k] = value
+					}
+				}
+			}
+			return out, len(m) == 0 || len(out) > 0
+		}
+		return x, true
 	}
+	desired, _ := clean(v)
+	actual, _ := clean(remote)
+
+	a, _ := json.Marshal(desired)
+	b, _ := json.Marshal(actual)
+	return string(a) == string(b)
 }

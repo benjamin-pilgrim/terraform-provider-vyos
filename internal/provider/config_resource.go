@@ -2,285 +2,214 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
-	"github.com/foltik/vyos-client-go/client"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/dynamicdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-// Ensure provider defined types fully satisfy framework interfaces
 var _ resource.Resource = &ConfigResource{}
 var _ resource.ResourceWithImportState = &ConfigResource{}
 var _ resource.ResourceWithConfigure = &ConfigResource{}
+var _ resource.ResourceWithValidateConfig = &ConfigResource{}
 
-func NewConfigResource() resource.Resource {
-	return &ConfigResource{}
-}
+func NewConfigResource() resource.Resource { return &ConfigResource{} }
 
-// ConfigResource defines the resource implementation.
-type ConfigResource struct {
-	vyosConfig *vyos.VyosConfig
-}
-
-// ConfigResourceModel describes the resource data model.
+type ConfigResource struct{ vyosConfig *vyos.VyosConfig }
 type ConfigResourceModel struct {
-	Path  types.String `tfsdk:"path"`
-	Value types.String `tfsdk:"value"`
-	Id    types.String `tfsdk:"id"`
+	Path  types.String  `tfsdk:"path"`
+	Value types.Dynamic `tfsdk:"value"`
+	Id    types.String  `tfsdk:"id"`
 }
 
 func (r *ConfigResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_config"
 }
 
-func (r *ConfigResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
-	response.Schema = schema.Schema{
-		MarkdownDescription: "Configuration Resource",
-
+func (r *ConfigResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Version:             1,
+		MarkdownDescription: "Exclusively manages one VyOS configuration subtree. Update replaces the entire subtree; destroy removes it. Resource paths must not overlap.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Configuration identifier",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"path": schema.StringAttribute{
-				MarkdownDescription: "Configuration path",
 				Required:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Nonempty configuration path with components separated by single spaces. Do not select an ancestor or descendant of another managed resource.",
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
-			"value": schema.StringAttribute{
-				MarkdownDescription: "JSON configuration for the path",
+			"value": schema.DynamicAttribute{
 				Optional:            true,
+				Computed:            true,
+				Default:             dynamicdefault.StaticValue(types.DynamicValue(types.ObjectValueMust(map[string]attr.Type{}, map[string]attr.Value{}))),
+				Sensitive:           true,
+				MarkdownDescription: "Native HCL configuration or a legacy JSON string. Use objects, strings and nonempty lists of strings; {} (the default) sets a flag. Null object members are omitted. Stored in Terraform state; protect state and plan files.",
 			},
 		},
+	}
+
+}
+
+func (r *ConfigResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data ConfigResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !data.Path.IsUnknown() && !data.Path.IsNull() {
+		if _, err := vyos.ParsePath(data.Path.ValueString()); err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("path"), "Invalid configuration path", err.Error())
+		}
+	}
+	if !data.Value.IsUnknown() && !data.Value.IsNull() {
+		if _, err := configurationJSON(data.Value); err != nil && !errors.Is(err, errUnknownValue) {
+			resp.Diagnostics.AddAttributeError(path.Root("value"), "Invalid configuration value", err.Error())
+		}
 	}
 }
 
 func (r *ConfigResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
-
-	vyosConfig, ok := req.ProviderData.(*vyos.VyosConfig)
-
+	var ok bool
+	r.vyosConfig, ok = req.ProviderData.(*vyos.VyosConfig)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-
-		return
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected *vyos.VyosConfig, got %T", req.ProviderData))
 	}
-
-	r.vyosConfig = vyosConfig
 }
 
 func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data *ConfigResourceModel
-
-	// Read Terraform plan data into the model
+	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// Check if config already exists
-	tflog.Info(ctx, "Reading path "+data.Path.ValueString())
-
-	components := strings.Split(data.Path.ValueString(), " ")
-	parentPath := strings.Join(components[0:len(components)-1], " ")
-	terminal := components[len(components)-1]
-
-	parent, err := r.vyosConfig.Show(ctx, parentPath)
+	raw, err := configurationJSON(data.Value)
+	var value any
+	if err == nil {
+		value, err = vyos.DecodeValue(raw)
+	}
 	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
+		resp.Diagnostics.AddError("Invalid configuration value", err.Error())
 		return
 	}
+	err = r.vyosConfig.Set(ctx, data.Path.ValueString(), value)
+	if err != nil && resp.Private != nil {
+		resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+	}
+	var applied *vyos.AppliedError
+	var attempted *vyos.MutationError
+	if err != nil && !errors.As(err, &applied) && !errors.As(err, &attempted) {
+		resp.Diagnostics.AddError("Unable to create configuration", err.Error())
+		return
+	}
+	data.Id = types.StringValue(data.Path.ValueString())
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to finish configuration", err.Error())
+	}
+}
 
-	if parent != nil {
-		existing := parent.(map[string]any)[terminal]
-
-		if existing != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Configuration path '%s' already exists, try a resource import instead.", data.Path.ValueString()), fmt.Sprintf("%v", existing))
+func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
 			return
 		}
 	}
 
-	var jsonValue interface{}
-	err = json.Unmarshal([]byte(data.Value.ValueString()), &jsonValue)
-
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
-	}
-
-	tflog.Info(ctx, "Setting path "+data.Path.ValueString()+" to value "+data.Value.ValueString())
-
-	err = r.vyosConfig.Set(ctx, data.Path.ValueString(), jsonValue)
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
-	}
-
-	data.Id = types.StringValue(data.Path.ValueString())
-
-	tflog.Info(ctx, "Set path "+data.Path.ValueString()+" to value "+data.Value.ValueString())
-
-	// Save data into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var data *ConfigResourceModel
-
-	// Read Terraform prior state data into the model
+	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	tflog.Info(ctx, "Reading path "+data.Path.ValueString())
-
-	components := strings.Split(data.Path.ValueString(), " ")
-	parentPath := strings.Join(components[0:len(components)-1], " ")
-	terminal := components[len(components)-1]
-
-	parent, err := r.vyosConfig.Show(ctx, parentPath)
+	value, err := r.vyosConfig.Show(ctx, data.Path.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
+		resp.Diagnostics.AddError("Unable to read configuration", err.Error())
 		return
 	}
-
-	if parent == nil {
+	if value == nil {
 		resp.State.RemoveResource(ctx)
 		return
 	}
-
-	config := parent.(map[string]any)[terminal]
-
-	if config == nil {
-		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	jsonValue, err := json.Marshal(config)
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
-	}
-
-	data.Value = types.StringValue(string(jsonValue[:]))
-
-	tflog.Info(ctx, "Read path "+data.Path.ValueString()+" with value "+data.Value.ValueString())
-
-	// Save updated data into Terraform state
+	data.Value = refreshConfiguration(data.Value, value)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan *ConfigResourceModel
-	var state *ConfigResourceModel
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-
+	var data ConfigResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	tflog.Info(ctx, "Updating path "+plan.Path.ValueString()+" to value "+plan.Value.ValueString())
-
-	var payload []map[string]any
-
-	payload = append(payload, map[string]any{
-		"op":   "delete",
-		"path": strings.Split(plan.Path.ValueString(), " "),
-	})
-
-	{
-		var value interface{}
-		err := json.Unmarshal([]byte(plan.Value.ValueString()), &value)
-
-		if err != nil {
-			resp.Diagnostics.AddError("No", err.Error())
-			return
-		}
-
-		flat, err := client.Flatten(value)
-		if err != nil {
-			resp.Diagnostics.AddError("No", err.Error())
-			return
-		}
-
-		for _, pair := range flat {
-			subpath, value := pair[0], pair[1]
-
-			prefixpath := plan.Path.ValueString()
-			if len(prefixpath) > 0 && len(subpath) > 0 {
-				prefixpath += " "
-			}
-			prefixpath += subpath
-
-			payload = append(payload, map[string]any{
-				"op":    "set",
-				"path":  strings.Split(prefixpath, " "),
-				"value": value,
-			})
-		}
+	raw, err := configurationJSON(data.Value)
+	var value any
+	if err == nil {
+		value, err = vyos.DecodeValue(raw)
 	}
-
-	tflog.Info(ctx, fmt.Sprintf("%v", payload))
-
-	_, err := r.vyosConfig.ApiRequest(ctx, "configure", payload)
 	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
+		resp.Diagnostics.AddError("Invalid configuration value", err.Error())
 		return
 	}
-
-	tflog.Info(ctx, "Updated path "+plan.Path.ValueString()+" to value "+plan.Value.ValueString())
-
-	// Save updated plan into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if err = r.vyosConfig.Update(ctx, data.Path.ValueString(), value); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
+		resp.Diagnostics.AddError("Unable to update configuration", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ConfigResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var data *ConfigResourceModel
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
-	// Read Terraform prior state data into the model
+	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	tflog.Info(ctx, "Deleting path "+data.Path.ValueString())
-
-	err := r.vyosConfig.Delete(ctx, data.Path.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
+	if err := r.vyosConfig.Delete(ctx, data.Path.ValueString()); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
+		resp.Diagnostics.AddError("Unable to delete configuration", err.Error())
 	}
-
-	tflog.Info(ctx, "Deleted path "+data.Path.ValueString())
 }
 
 func (r *ConfigResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if _, err := vyos.ParsePath(req.ID); err != nil {
+		resp.Diagnostics.AddError("Invalid import path", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("path"), req.ID)...)
 }
