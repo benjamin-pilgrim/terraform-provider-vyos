@@ -363,6 +363,19 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 		if mode == "update" && present && Equivalent(entry.Value, value) {
 			continue
 		}
+		if mode == "update" && present {
+			wanted, decodeErr := DecodeValue(entry.Value)
+			if decodeErr != nil {
+				return false, decodeErr
+			}
+			d, w, deltaErr := changedOperations(entry.Path, value, wanted)
+			if deltaErr != nil {
+				return false, deltaErr
+			}
+			deletes = append(deletes, d...)
+			writes = append(writes, w...)
+			continue
+		}
 		if present {
 			deletes = append(deletes, map[string]any{"op": "delete", "path": entry.Path})
 		}
