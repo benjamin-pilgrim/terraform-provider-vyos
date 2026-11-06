@@ -45,6 +45,9 @@ func (c *Client) request(ctx context.Context, endpoint string, payload any) (any
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("VyOS %s request did not complete: %w", endpoint, ctx.Err())
+		}
 		return nil, fmt.Errorf("VyOS %s request failed (check connectivity, TLS trust and router logs)", endpoint)
 	}
 	defer resp.Body.Close()
@@ -63,6 +66,9 @@ func (c *Client) request(ctx context.Context, endpoint string, payload any) (any
 	const limit = 32 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil || len(body) > limit {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("VyOS %s response did not complete: %w", endpoint, ctx.Err())
+		}
 		return nil, errors.New("cannot read API response")
 	}
 	var envelope struct {
