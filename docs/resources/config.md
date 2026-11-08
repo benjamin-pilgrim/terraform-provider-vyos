@@ -3,26 +3,26 @@
 page_title: "vyos_config Resource - vyos"
 subcategory: ""
 description: |-
-  Configuration Resource
+  Exclusively manages one VyOS configuration subtree. Update replaces the entire subtree; destroy removes it. Resource paths must not overlap.
 ---
 
 # vyos_config (Resource)
 
-Configuration Resource
+Exclusively manages one VyOS configuration subtree. Update replaces the entire subtree; destroy removes it. Resource paths must not overlap.
 
 ## Example Usage
 
 ```terraform
 resource "vyos_config" "test" {
-  path = "firewall name WAN_LOCAL"
+  path = "firewall ipv4 name TUNNEL-INGRESS"
   value = jsonencode({
     default-action = "drop"
     rule = {
-      10 = {
-        action = "accept"
-        state = {
-          established = "enable"
-          related     = "enable"
+      "10" = {
+        action   = "accept"
+        protocol = "tcp"
+        destination = {
+          port = "443"
         }
       }
     }
@@ -35,11 +35,11 @@ resource "vyos_config" "test" {
 
 ### Required
 
-- `path` (String) Configuration path
+- `path` (String) Nonempty configuration path with components separated by single spaces. Do not select an ancestor or descendant of another managed resource.
 
 ### Optional
 
-- `value` (String) JSON configuration for the path
+- `value` (String, Sensitive) JSON configuration: objects, strings, or nonempty lists of strings. An empty object (the default) sets a flag. Null object members are omitted. Stored in Terraform state; protect state and plan files.
 
 ### Read-Only
 
