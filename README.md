@@ -115,6 +115,21 @@ produce diagnostics and retain state. A path is removed from state only after a
 successful read proves it absent. Existing configuration is never silently adopted
 on create, including existing flags.
 
+Set `commit_confirm_minutes = 2` in the provider to enable a rollback timer for
+each create, update and destroy. The provider checks a fresh API connection and the changed
+configuration, confirms, verifies again, then saves. If the connection drops or
+verification fails, the operation fails without saving. VyOS can recover when
+the timer expires. Failed timed changes retain state and block early retries
+until the recovery window has passed. This checks router access and configuration, not network
+traffic, and does not make the whole Terraform apply atomic.
+
+The default is `0` (disabled). VyOS defaults to rebooting into the saved
+configuration on expiry; `system config-management commit-confirm action reload`
+selects recovery without reboot. A confirmed change can still fail to save;
+restore saving and save explicitly on the router. Lost responses leave the
+result uncertain; inspect the router before retrying. Mutations are not retried
+automatically.
+
 ## HTTPS API self-configuration
 
 Mutations of `service https` and its ancestors are rejected before sending a

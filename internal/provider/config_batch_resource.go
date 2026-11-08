@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -46,7 +47,7 @@ func (r *ConfigBatchResource) Metadata(ctx context.Context, req resource.Metadat
 func (r *ConfigBatchResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Version:             1,
-		MarkdownDescription: "Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
+		MarkdownDescription: "Manages named, disjoint VyOS subtrees in one configure request. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true, MarkdownDescription: "JSON object mapping entry names to their path arrays; also used for import.",
@@ -182,6 +183,9 @@ func (r *ConfigBatchResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 	attempted, err := r.vyosConfig.MutateBatch(ctx, entries, "create")
+	if err != nil && resp.Private != nil {
+		resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+	}
 	if err == nil || attempted {
 		identity, _ := vyos.BatchIdentity(entries)
 		data.ID = types.StringValue(identity)
@@ -193,6 +197,13 @@ func (r *ConfigBatchResource) Create(ctx context.Context, req resource.CreateReq
 }
 
 func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -248,6 +259,13 @@ func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest
 }
 
 func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -265,6 +283,9 @@ func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 	if _, err := r.vyosConfig.MutateBatch(ctx, entries, "update"); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
 		resp.Diagnostics.AddError("Unable to update configuration batch", err.Error())
 		return
 	}
@@ -273,6 +294,13 @@ func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateReq
 }
 
 func (r *ConfigBatchResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -285,6 +313,9 @@ func (r *ConfigBatchResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 	if _, err := r.vyosConfig.MutateBatch(ctx, entries, "delete"); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
 		resp.Diagnostics.AddError("Unable to delete configuration batch", err.Error())
 	}
 }

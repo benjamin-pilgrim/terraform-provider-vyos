@@ -3,6 +3,7 @@
 source /opt/vyatta/etc/functions/script-template
 configure
 set system host-name provider-ci
+set system config-management commit-confirm action reload
 set interfaces ethernet eth0 address 10.0.2.15/24
 set pki certificate PROVIDER-CI certificate "$(sed '/---/d' /mnt/ci/api.pem | tr -d '\n')"
 set pki certificate PROVIDER-CI private key "$(sed '/---/d' /mnt/ci/api.key | tr -d '\n')"

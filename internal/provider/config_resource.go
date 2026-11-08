@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -105,6 +106,9 @@ func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	err = r.vyosConfig.Set(ctx, data.Path.ValueString(), value)
+	if err != nil && resp.Private != nil {
+		resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+	}
 	var applied *vyos.AppliedError
 	var attempted *vyos.MutationError
 	if err != nil && !errors.As(err, &applied) && !errors.As(err, &attempted) {
@@ -119,6 +123,13 @@ func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest,
 }
 
 func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -139,6 +150,13 @@ func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, res
 }
 
 func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -155,6 +173,9 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 	if err = r.vyosConfig.Update(ctx, data.Path.ValueString(), value); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
 		resp.Diagnostics.AddError("Unable to update configuration", err.Error())
 		return
 	}
@@ -162,6 +183,13 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 }
 
 func (r *ConfigResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if req.Private != nil {
+		blocked, d := pendingOperation(ctx, req.Private, time.Now())
+		resp.Diagnostics.Append(d...)
+		if blocked {
+			return
+		}
+	}
 
 	var data ConfigResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -169,6 +197,9 @@ func (r *ConfigResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 	if err := r.vyosConfig.Delete(ctx, data.Path.ValueString()); err != nil {
+		if resp.Private != nil {
+			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
+		}
 		resp.Diagnostics.AddError("Unable to delete configuration", err.Error())
 	}
 }
