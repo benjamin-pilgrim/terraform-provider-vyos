@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Accept native HCL values, preserve legacy JSON strings and upgrade schema-v0 state.
+
+
 - Add `vyos_config_batch` for named, disjoint path arrays with one configure/save
   sequence, import support, drift refresh and failed-create cleanup identity.
 

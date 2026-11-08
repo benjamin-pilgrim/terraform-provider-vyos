@@ -3,12 +3,12 @@
 page_title: "vyos_config_batch Resource - vyos"
 subcategory: ""
 description: |-
-  Manages named, disjoint VyOS subtrees in one configure request and one save. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+  Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 ---
 
 # vyos_config_batch (Resource)
 
-Manages named, disjoint VyOS subtrees in one configure request and one save. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 
 ## Example Usage
 
@@ -17,11 +17,11 @@ resource "vyos_config_batch" "policies" {
   entries = {
     ingress = {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
-      value = jsonencode({ "default-action" = "drop" })
+      value = { "default-action" = "drop" }
     }
     egress = {
       path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = jsonencode({ "default-action" = "accept" })
+      value = { "default-action" = "accept" }
     }
   }
 }
@@ -32,19 +32,11 @@ resource "vyos_config_batch" "policies" {
 
 ### Required
 
-- `entries` (Attributes Map) At least one named entry. Paths must be disjoint within the batch and from all other resources. Each entry exclusively owns its complete subtree. (see [below for nested schema](#nestedatt--entries))
+- `entries` (Dynamic, Sensitive) Object of named entries, each containing path (an array of strings) and value (native HCL configuration or a legacy JSON string). Each entry exclusively owns its complete subtree. Paths must be disjoint. Values remain in Terraform state.
 
 ### Read-Only
 
 - `id` (String) JSON object mapping entry names to their path arrays; also used for import.
-
-<a id="nestedatt--entries"></a>
-### Nested Schema for `entries`
-
-Required:
-
-- `path` (List of String) Path components as an ordered array. Spaces within a component are preserved.
-- `value` (String, Sensitive) JSON configuration, with the same value rules as vyos_config. Use jsonencode; use {} for a flag. Values remain in Terraform state.
 
 ## Import
 

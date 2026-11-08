@@ -20,12 +20,12 @@ provider "vyos" {
 
 resource "vyos_config" "ingress_rules" {
   path = "firewall ipv4 name TUNNEL-INGRESS"
-  value = jsonencode({
+  value = {
     "default-action" = "drop"
     rule = {
       "10" = { action = "accept", protocol = "tcp", destination = { port = "443" } }
     }
-  })
+  }
 }
 ```
 
@@ -46,15 +46,17 @@ instances/external writers. `depends_on` orders actions but does not make overla
 ownership safe. Avoid `create_before_destroy` for an unchanged path.
 
 Paths are nonempty, with a single space between components. Object keys are
-individual path components (so tag names inside JSON can include spaces). Values
-use the JSON shape returned by the VyOS API:
+individual path components (so object keys can include spaces). Values accept native
+HCL objects, lists and scalar strings, or existing JSON strings produced by
+`jsonencode`. A string that contains valid supported JSON keeps its legacy JSON
+meaning; wrap it with `jsonencode` if you need that text as a literal scalar:
 
 - Strings configure scalar leaves. Use strings for ports, numbers and booleans.
 - Nonempty lists of strings configure multivalue leaves. Single-element lists and
   their scalar form compare equally on refresh because VyOS may return either.
 - `{}` configures a valueless flag; omitted or null resource `value` defaults to `{}`.
-- Null **object members** are omitted. A top-level JSON `null`, empty lists,
-  nonstring list members, and objects with no effective values are rejected.
+- Null **object members** are omitted. Empty lists, nonstring list members,
+  and objects with no effective values are rejected.
 - Whitespace and object-key order are ignored on refresh. Multivalue list order is
   significant; match the order returned by your router. No schema-wide coercion
   of numeric/bool values or router-generated defaults is attempted.
@@ -78,11 +80,11 @@ resource "vyos_config_batch" "policies" {
   entries = {
     ingress = {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
-      value = jsonencode({ "default-action" = "drop" })
+      value = { "default-action" = "drop" }
     }
     egress = {
       path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = jsonencode({ "default-action" = "accept" })
+      value = { "default-action" = "accept" }
     }
   }
 }
@@ -112,21 +114,6 @@ fresh active configuration every time; retrieval/authentication/transport errors
 produce diagnostics and retain state. A path is removed from state only after a
 successful read proves it absent. Existing configuration is never silently adopted
 on create, including existing flags.
-
-There is **no whole-apply transaction, commit-confirm timer, automatic rollback,
-or protection against losing API reachability**. Terraform may finish some resource
-commits before another fails. A commit can succeed and its subsequent save fail;
-the diagnostic distinguishes that case and a failed create retains its identity.
-Restore saving and save explicitly on the router: a later Terraform apply can be a
-no-op because the active configuration already matches. A transport timeout leaves
-the commit result uncertain; inspect active/saved configuration before retrying.
-A lost save response also leaves persistence uncertain; inspect the saved file.
-There are no automatic mutation retries.
-
-For firewall, interface, routing, API or access-control changes, validate in an
-isolated lab first. Keep working console/out-of-band access and stage changes so
-the API remains reachable. Use a separate native VyOS commit-confirm workflow when
-rollback on lost management access is required; this provider does not provide it.
 
 ## HTTPS API self-configuration
 
@@ -167,3 +154,11 @@ acceptance tests; see [.ci/README.md](.ci/README.md). GitHub CI runs the same co
 on a standard hosted runner, without external lab setup or secrets.
 The regular suite uses deterministic fake HTTP/TLS servers and covers persistence,
 HTTP/API errors, drift refresh, concurrency, input validation and failure state.
+
+## State migration and rollback
+
+The native-value provider upgrades schema-v0 JSON-string state to schema v1
+without changing router configuration or resource identity. Keep an access-controlled
+state backup before the first upgrade. Older providers cannot read schema-v1 state;
+reverting a binary alone does not downgrade state. See
+[the migration and recovery procedure](.ci/state-upgrade.md).
