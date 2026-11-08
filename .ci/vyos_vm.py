@@ -204,7 +204,7 @@ class Console:
 _SAME = object()
 
 
-def native_script(path, expected, expected_saved=_SAME):
+def native_script(path, expected, expected_saved=_SAME, unordered=False):
     pending = expected_saved is not _SAME
     if not pending:
         expected_saved = expected
@@ -215,6 +215,7 @@ path=json.loads(%r)
 expected=json.loads(%r)
 expected_saved=json.loads(%r)
 pending=%r
+unordered=%r
 active=ConfigTree(subprocess.check_output(['cli-shell-api','showConfig','--show-active-only'],text=True))
 saved=ConfigTree(open('/config/config.boot').read())
 if pending:
@@ -227,9 +228,13 @@ for source,tree,want in [('active',active,expected),('saved',saved,expected_save
   assert exists,(source,path,'missing configuration')
   node=json.loads(tree.to_json())
   for part in path:node=node[part]
-  assert node==want,(source,path,'value differs')
+  if unordered:
+   assert isinstance(node,(str,list)),(source,path,'not a list leaf')
+   assert set([node] if isinstance(node,str) else node)==set(want),(source,path,'list differs')
+  else:
+   assert node==want,(source,path,'value differs')
 print('PASS native active/saved check')
-''' % (json.dumps(path), json.dumps(expected), json.dumps(expected_saved), pending)
+''' % (json.dumps(path), json.dumps(expected), json.dumps(expected_saved), pending, unordered)
 
 
 class Checks:
@@ -243,8 +248,8 @@ class Checks:
         self.thread = threading.Thread(target=self.serve, daemon=True)
         self.thread.start()
 
-    def check(self, path, value, saved_value=_SAME):
-        result = self.console.command('python3 -c ' + shlex.quote(native_script(path, value, saved_value)))
+    def check(self, path, value, saved_value=_SAME, unordered=False):
+        result = self.console.command('python3 -c ' + shlex.quote(native_script(path, value, saved_value, unordered)))
         self.records.append({'path': path, 'passed': True})
         return result
 
@@ -260,7 +265,7 @@ class Checks:
                         request = json.loads(stream.readline(1024 * 1024))
                     path = request['path']
                     saved = json.loads(request['saved_value']) if 'saved_value' in request else _SAME
-                    result = self.check(path.split(' ') if isinstance(path, str) else path, json.loads(request['value']), saved)
+                    result = self.check(path.split(' ') if isinstance(path, str) else path, json.loads(request['value']), saved, request.get('unordered', False))
                     response = {'ok': True, 'message': result}
                 except Exception as error:
                     response = {'ok': False, 'message': str(error)}
@@ -278,11 +283,11 @@ class Checks:
         self.thread.join(timeout=5)
 
 
-def check_client(path, value, saved_value=_SAME):
+def check_client(path, value, saved_value=_SAME, unordered=False):
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(300)
         client.connect(os.environ['VYOS_CI_SOCKET'])
-        request = {'path': path, 'value': value}
+        request = {'path': path, 'value': value, 'unordered': unordered}
         if saved_value is not _SAME:
             request['saved_value'] = saved_value
         client.sendall((json.dumps(request) + '\n').encode())
@@ -402,6 +407,7 @@ def _run(args):
                 for path in [['firewall', 'ipv4', 'name', 'TF-PROVIDER-TEST'],
                              ['service', 'ssh', 'disable-host-validation'],
                              ['firewall', 'ipv4', 'name', 'TF-PROVIDER-CONNECTION-LOSS'],
+                             ['firewall', 'ipv4', 'name', 'TF-PROVIDER-INCLUDE'],
                              ['firewall', 'ipv4', 'name', 'TF-PROVIDER-BATCH-A'],
                              ['firewall', 'ipv4', 'name', 'TF-PROVIDER-BATCH-B']]:
                     checks.check(path, None)
@@ -471,7 +477,7 @@ def main():
     execute.add_argument('--output', type=Path, default=Path('.ci-results'))
     execute.add_argument('--test-binary', type=Path, required=True)
     execute.add_argument('--terraform', type=Path, required=True)
-    for action in ['check', 'check-array', 'check-pending-array']:
+    for action in ['check', 'check-array', 'check-pending-array', 'check-list-array']:
         check = commands.add_parser(action)
         check.add_argument('path')
         check.add_argument('value')
@@ -487,9 +493,10 @@ def main():
         print(f'Resolved VyOS {build.version}; sha256={build.sha256}', flush=True)
     elif args.action == 'fetch':
         print(fetch(args.cache.resolve(), Build.read(args.build)))
-    elif args.action in ['check', 'check-array', 'check-pending-array']:
+    elif args.action in ['check', 'check-array', 'check-pending-array', 'check-list-array']:
         check_client(args.path if args.action == 'check' else json.loads(args.path), args.value,
-                     args.saved_value if args.action == 'check-pending-array' else _SAME)
+                     args.saved_value if args.action == 'check-pending-array' else _SAME,
+                     unordered=args.action == 'check-list-array')
     else:
         def interrupt(_number, _frame):
             raise KeyboardInterrupt

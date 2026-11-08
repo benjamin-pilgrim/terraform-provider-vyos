@@ -3,12 +3,12 @@
 page_title: "vyos_config_batch Resource - vyos"
 subcategory: ""
 description: |-
-  Manages named, disjoint VyOS subtrees in one configure request. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+  Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; changing ownership mode requires state migration. Values and includes update in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 ---
 
 # vyos_config_batch (Resource)
 
-Manages named, disjoint VyOS subtrees in one configure request. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; changing ownership mode requires state migration. Values and includes update in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 
 ## Example Usage
 
@@ -19,9 +19,9 @@ resource "vyos_config_batch" "policies" {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
       value = { "default-action" = "drop" }
     }
-    egress = {
-      path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = { "default-action" = "accept" }
+    dns_clients = {
+      path    = ["service", "dns", "forwarding", "allow-from"]
+      include = ["10.114.0.0/24"]
     }
   }
 }
@@ -32,11 +32,11 @@ resource "vyos_config_batch" "policies" {
 
 ### Required
 
-- `entries` (Dynamic, Sensitive) Object of named entries, each containing path (an array of strings) and value (native HCL configuration or a legacy JSON string). Each entry exclusively owns its complete subtree. Paths must be disjoint. Values remain in Terraform state.
+- `entries` (Dynamic, Sensitive) Object of named entries, each containing path and exactly one of value or include. value owns the whole subtree; include is a collection of strings and owns only those list values. Unrelated list values remain untouched. Ownership must not overlap. Values remain in Terraform state.
 
 ### Read-Only
 
-- `id` (String) JSON object mapping entry names to their path arrays; also used for import.
+- `id` (String) Batch identity. Import whole-value entries with path arrays, or partial entries with path and explicit include arrays.
 
 ## Import
 
@@ -45,5 +45,5 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-terraform import vyos_config_batch.policies '{"ingress":["firewall","ipv4","name","APP-INGRESS"],"egress":["firewall","ipv4","name","APP-EGRESS"]}'
+terraform import vyos_config_batch.policies '{"ingress":["firewall","ipv4","name","APP-INGRESS"],"dns_clients":{"path":["service","dns","forwarding","allow-from"],"include":["10.114.0.0/24"]}}'
 ```

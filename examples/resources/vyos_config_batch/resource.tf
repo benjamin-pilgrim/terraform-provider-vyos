@@ -4,9 +4,9 @@ resource "vyos_config_batch" "policies" {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
       value = { "default-action" = "drop" }
     }
-    egress = {
-      path  = ["firewall", "ipv4", "name", "APP-EGRESS"]
-      value = { "default-action" = "accept" }
+    dns_clients = {
+      path    = ["service", "dns", "forwarding", "allow-from"]
+      include = ["10.114.0.0/24"]
     }
   }
 }
