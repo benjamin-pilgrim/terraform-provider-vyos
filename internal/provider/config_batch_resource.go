@@ -2,7 +2,7 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
@@ -24,20 +24,17 @@ var (
 	_ resource.ResourceWithImportState    = &ConfigBatchResource{}
 )
 
-var batchEntryType = types.ObjectType{AttrTypes: map[string]attr.Type{
-	"path": types.ListType{ElemType: types.StringType}, "value": types.StringType,
-}}
-
 type ConfigBatchResource struct{ vyosConfig *vyos.VyosConfig }
 
 type ConfigBatchModel struct {
-	ID      types.String `tfsdk:"id"`
-	Entries types.Map    `tfsdk:"entries"`
+	ID      types.String  `tfsdk:"id"`
+	Entries types.Dynamic `tfsdk:"entries"`
 }
 
 type batchEntryModel struct {
-	Path  types.List   `tfsdk:"path"`
-	Value types.String `tfsdk:"value"`
+	Path         types.List
+	Value        types.Dynamic
+	originalPath attr.Value
 }
 
 func NewConfigBatchResource() resource.Resource { return &ConfigBatchResource{} }
@@ -48,24 +45,15 @@ func (r *ConfigBatchResource) Metadata(ctx context.Context, req resource.Metadat
 
 func (r *ConfigBatchResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages named, disjoint VyOS subtrees in one configure request and one save. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
+		Version:             1,
+		MarkdownDescription: "Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true, MarkdownDescription: "JSON object mapping entry names to their path arrays; also used for import.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
-			"entries": schema.MapNestedAttribute{
-				Required: true, MarkdownDescription: "At least one named entry. Paths must be disjoint within the batch and from all other resources. Each entry exclusively owns its complete subtree.",
-				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-					"path": schema.ListAttribute{
-						Required: true, ElementType: types.StringType,
-						MarkdownDescription: "Path components as an ordered array. Spaces within a component are preserved.",
-					},
-					"value": schema.StringAttribute{
-						Required: true, Sensitive: true,
-						MarkdownDescription: "JSON configuration, with the same value rules as vyos_config. Use jsonencode; use {} for a flag. Values remain in Terraform state.",
-					},
-				}},
+			"entries": schema.DynamicAttribute{
+				Required: true, Sensitive: true, MarkdownDescription: "Object of named entries, each containing path (an array of strings) and value (native HCL configuration or a legacy JSON string). Each entry exclusively owns its complete subtree. Paths must be disjoint. Values remain in Terraform state.",
 			},
 		},
 	}
@@ -83,14 +71,14 @@ func (r *ConfigBatchResource) Configure(ctx context.Context, req resource.Config
 }
 
 // Paths determine identity; values may still be unknown while planning.
-func decodeBatch(ctx context.Context, values types.Map, requireValues bool) (vyos.Batch, diag.Diagnostics) {
+func decodeBatch(ctx context.Context, values types.Dynamic, requireValues bool) (vyos.Batch, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	if values.IsNull() || values.IsUnknown() {
 		diagnostics.AddAttributeError(path.Root("entries"), "Unknown batch paths", "Batch entry names and paths must be known when planning changes to an existing batch.")
 		return nil, diagnostics
 	}
-	var models map[string]batchEntryModel
-	diagnostics.Append(values.ElementsAs(ctx, &models, false)...)
+	models, d := batchModels(ctx, values)
+	diagnostics.Append(d...)
 	entries := vyos.Batch{}
 	for name, model := range models {
 		location := path.Root("entries").AtMapKey(name)
@@ -101,9 +89,13 @@ func decodeBatch(ctx context.Context, values types.Map, requireValues bool) (vyo
 		var components []string
 		diagnostics.Append(model.Path.ElementsAs(ctx, &components, false)...)
 		if requireValues && (model.Value.IsNull() || model.Value.IsUnknown()) {
-			diagnostics.AddAttributeError(location.AtName("value"), "Unknown configuration value", "Each batch entry must have a known JSON value before applying.")
+			diagnostics.AddAttributeError(location.AtName("value"), "Unknown configuration value", "Each batch entry must have a known configuration value before applying.")
 		}
-		entries[name] = vyos.BatchEntry{Path: components, Value: model.Value.ValueString()}
+		raw, err := configurationJSON(model.Value)
+		if requireValues && err != nil {
+			diagnostics.AddAttributeError(location.AtName("value"), "Invalid configuration value", err.Error())
+		}
+		entries[name] = vyos.BatchEntry{Path: components, Value: raw}
 	}
 	if diagnostics.HasError() {
 		return nil, diagnostics
@@ -120,17 +112,13 @@ func (r *ConfigBatchResource) ValidateConfig(ctx context.Context, req resource.V
 	if resp.Diagnostics.HasError() || data.Entries.IsNull() || data.Entries.IsUnknown() {
 		return
 	}
-	var models map[string]batchEntryModel
-	resp.Diagnostics.Append(data.Entries.ElementsAs(ctx, &models, true)...)
+	models, d := batchModels(ctx, data.Entries)
+	resp.Diagnostics.Append(d...)
 	known := vyos.Batch{}
 	for name, model := range models {
 		location := path.Root("entries").AtMapKey(name)
-		if data.Entries.Elements()[name].IsNull() {
-			resp.Diagnostics.AddAttributeError(location, "Invalid batch entry", "Entries must contain a path and value.")
-			continue
-		}
-		if data.Entries.Elements()[name].IsUnknown() {
-			continue
+		if model.Path.IsNull() {
+			resp.Diagnostics.AddAttributeError(location.AtName("path"), "Invalid batch path", "Path must be a nonempty array of strings.")
 		}
 		if !model.Path.IsUnknown() && !model.Path.IsNull() {
 			complete := true
@@ -149,7 +137,7 @@ func (r *ConfigBatchResource) ValidateConfig(ctx context.Context, req resource.V
 			}
 		}
 		if !model.Value.IsUnknown() && !model.Value.IsNull() {
-			if _, err := vyos.DecodeValue(model.Value.ValueString()); err != nil {
+			if _, err := configurationJSON(model.Value); err != nil && !errors.Is(err, errUnknownValue) {
 				resp.Diagnostics.AddAttributeError(location.AtName("value"), "Invalid configuration value", err.Error())
 			}
 		}
@@ -205,6 +193,7 @@ func (r *ConfigBatchResource) Create(ctx context.Context, req resource.CreateReq
 }
 
 func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -224,28 +213,34 @@ func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.State.RemoveResource(ctx)
 		return
 	}
-	var prior map[string]batchEntryModel
-	resp.Diagnostics.Append(data.Entries.ElementsAs(ctx, &prior, false)...)
+	prior, d := batchModels(ctx, data.Entries)
+	if !data.Entries.IsNull() {
+		resp.Diagnostics.Append(d...)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	refreshed := map[string]batchEntryModel{}
+	unchanged := len(prior) == len(current)
 	for name, value := range current {
-		raw := prior[name].Value.ValueString()
-		if !vyos.Equivalent(raw, value) {
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				resp.Diagnostics.AddError("Invalid router configuration", "Cannot encode batch configuration")
-				return
-			}
-			raw = string(encoded)
+		priorValue := types.DynamicNull()
+		if model, ok := prior[name]; ok {
+			priorValue = model.Value
+		}
+		refreshedValue := refreshConfiguration(priorValue, value)
+		if !priorValue.Equal(refreshedValue) {
+			unchanged = false
 		}
 		components, diagnostics := types.ListValueFrom(ctx, types.StringType, entries[name].Path)
 		resp.Diagnostics.Append(diagnostics...)
-		refreshed[name] = batchEntryModel{Path: components, Value: types.StringValue(raw)}
+		refreshed[name] = batchEntryModel{Path: components, Value: refreshedValue, originalPath: prior[name].originalPath}
+	}
+	if unchanged {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
 	}
 	var diagnostics diag.Diagnostics
-	data.Entries, diagnostics = types.MapValueFrom(ctx, batchEntryType, refreshed)
+	data.Entries, diagnostics = packBatchModels(ctx, refreshed)
 	resp.Diagnostics.Append(diagnostics...)
 	if !resp.Diagnostics.HasError() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -253,6 +248,7 @@ func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest
 }
 
 func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -272,10 +268,12 @@ func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Unable to update configuration batch", err.Error())
 		return
 	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ConfigBatchResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+
 	var data ConfigBatchModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -302,9 +300,9 @@ func (r *ConfigBatchResource) ImportState(ctx context.Context, req resource.Impo
 	for name, entry := range entries {
 		components, diagnostics := types.ListValueFrom(ctx, types.StringType, entry.Path)
 		resp.Diagnostics.Append(diagnostics...)
-		models[name] = batchEntryModel{Path: components, Value: types.StringNull()}
+		models[name] = batchEntryModel{Path: components, Value: types.DynamicNull()}
 	}
-	values, diagnostics := types.MapValueFrom(ctx, batchEntryType, models)
+	values, diagnostics := packBatchModels(ctx, models)
 	resp.Diagnostics.Append(diagnostics...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &ConfigBatchModel{ID: types.StringValue(identity), Entries: values})...)
 }

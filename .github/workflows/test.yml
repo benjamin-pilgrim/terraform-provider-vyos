@@ -48,3 +48,20 @@ jobs:
         with:
           version: v2.20.0
           args: check
+
+  state-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: '1.17.1'
+          terraform_wrapper: false
+      - run: python3 .ci/check-state-upgrade.py

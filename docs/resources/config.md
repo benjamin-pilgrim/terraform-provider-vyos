@@ -15,7 +15,7 @@ Exclusively manages one VyOS configuration subtree. Update replaces the entire s
 ```terraform
 resource "vyos_config" "test" {
   path = "firewall ipv4 name TUNNEL-INGRESS"
-  value = jsonencode({
+  value = {
     default-action = "drop"
     rule = {
       "10" = {
@@ -26,7 +26,7 @@ resource "vyos_config" "test" {
         }
       }
     }
-  })
+  }
 }
 ```
 
@@ -39,7 +39,7 @@ resource "vyos_config" "test" {
 
 ### Optional
 
-- `value` (String, Sensitive) JSON configuration: objects, strings, or nonempty lists of strings. An empty object (the default) sets a flag. Null object members are omitted. Stored in Terraform state; protect state and plan files.
+- `value` (Dynamic, Sensitive) Native HCL configuration or a legacy JSON string. Use objects, strings and nonempty lists of strings; {} (the default) sets a flag. Null object members are omitted. Stored in Terraform state; protect state and plan files.
 
 ### Read-Only
 
