@@ -26,12 +26,12 @@ func batchModels(ctx context.Context, values types.Dynamic) (map[string]batchEnt
 	case types.Map:
 		entries = v.Elements()
 	default:
-		diagnostics.AddError("Invalid batch entries", "Use an object of named entries, each containing path and value.")
+		diagnostics.AddError("Invalid batch entries", "Use an object of named entries, each containing path and exactly one of value or include.")
 		return models, diagnostics
 	}
 	for name, entry := range entries {
 		if entry.IsNull() {
-			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must contain path and value.", name))
+			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must contain path and exactly one of value or include.", name))
 			continue
 		}
 		if entry.IsUnknown() {
@@ -40,19 +40,24 @@ func batchModels(ctx context.Context, values types.Dynamic) (map[string]batchEnt
 		}
 		object, ok := entry.(types.Object)
 		if !ok {
-			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must be an object containing path and value.", name))
+			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must be an object containing path and exactly one of value or include.", name))
 			continue
 		}
 		fields := object.Attributes()
-		if len(fields) != 2 || fields["path"] == nil || fields["value"] == nil {
-			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must contain exactly path and value.", name))
+		if len(fields) != 2 || fields["path"] == nil || (fields["value"] == nil) == (fields["include"] == nil) {
+			diagnostics.AddError("Invalid batch entry", fmt.Sprintf("Entry %q must contain exactly path and exactly one of value or include.", name))
 			continue
 		}
-		value, ok := fields["value"].(types.Dynamic)
-		if !ok {
-			value = types.DynamicValue(fields["value"])
+		field := "value"
+		partial := fields["include"] != nil
+		if partial {
+			field = "include"
 		}
-		model := batchEntryModel{Value: value, originalPath: fields["path"]}
+		value, ok := fields[field].(types.Dynamic)
+		if !ok {
+			value = types.DynamicValue(fields[field])
+		}
+		model := batchEntryModel{Value: value, Partial: partial, originalPath: fields["path"]}
 		var elements []attr.Value
 		if fields["path"].IsUnknown() {
 			model.Path = types.ListUnknown(types.StringType)
@@ -99,7 +104,11 @@ func packBatchModels(ctx context.Context, models map[string]batchEntryModel) (ty
 		if v == nil {
 			v = types.StringNull()
 		}
-		entries[name] = types.ObjectValueMust(map[string]attr.Type{"path": p.Type(ctx), "value": v.Type(ctx)}, map[string]attr.Value{"path": p, "value": v})
+		field := "value"
+		if model.Partial {
+			field = "include"
+		}
+		entries[name] = types.ObjectValueMust(map[string]attr.Type{"path": p.Type(ctx), field: v.Type(ctx)}, map[string]attr.Value{"path": p, field: v})
 		typs[name] = entries[name].Type(ctx)
 	}
 	object, d := types.ObjectValue(typs, entries)
