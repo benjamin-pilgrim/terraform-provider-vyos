@@ -10,8 +10,8 @@ The command does the setup itself. It resolves the latest official VyOS rolling
 release to an exact dated version and GitHub-published SHA256, downloads and
 verifies that ISO, boots a disposable QEMU VM, creates a temporary HTTPS
 certificate and API key, and runs all three
-Terraform acceptance tests. Native console checks verify destroy cleanup and an unrelated sentinel.
-The following reliability PR adds active/saved checks after each create/update. The VM is stopped and its temporary files removed on success,
+Terraform acceptance tests. Native console checks compare active and saved configuration after each
+create/update, and verify destroy cleanup plus an unrelated sentinel. The VM is stopped and its temporary files removed on success,
 failure, or cancellation.
 
 No existing router, production configuration, API key, repository secret,
