@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- [Terraform](https://www.terraform.io/downloads.html) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.18
+- [Terraform](https://www.terraform.io/downloads.html) >= 1.17.1
+- [Go](https://golang.org/doc/install) >= 1.26.0
 
 ## Building The Provider
 
@@ -48,3 +48,14 @@ In order to run the full suite of Acceptance tests, run `make testacc`.
 ```shell
 make testacc
 ```
+
+## Tested versions and CI
+
+Terraform 1.17.1 is the tested CLI baseline; the former 1.0–1.2 acceptance
+matrix is retired. Compatibility with those older CLIs is not claimed by this
+maintenance series. Go 1.26 is the minimum build toolchain and is exercised in
+the regular test job; documentation and release jobs also use Go 1.27.
+
+Acceptance uses a disposable VM from an official VyOS rolling ISO, verified
+against its published SHA256. Every run records the resolved dated build for
+replay. See [.ci/README.md](.ci/README.md). Only disposable fixtures are used.

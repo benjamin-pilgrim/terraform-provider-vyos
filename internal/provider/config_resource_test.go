@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
 func TestAccConfigResourceSimpleFirewallRuleset(t *testing.T) {
@@ -14,10 +14,10 @@ func TestAccConfigResourceSimpleFirewallRuleset(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccConfigResourceConfig("firewall name TEST", `jsonencode({default-action = "drop"})`),
+				Config: testAccConfigResourceConfig("firewall ipv4 name TEST", `jsonencode({default-action = "drop"})`),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("vyos_config.test", "id", "firewall name TEST"),
-					resource.TestCheckResourceAttr("vyos_config.test", "path", "firewall name TEST"),
+					resource.TestCheckResourceAttr("vyos_config.test", "id", "firewall ipv4 name TEST"),
+					resource.TestCheckResourceAttr("vyos_config.test", "path", "firewall ipv4 name TEST"),
 					resource.TestCheckResourceAttr("vyos_config.test", "value", `{"default-action":"drop"}`),
 				),
 			},
@@ -30,7 +30,7 @@ func TestAccConfigResourceSimpleFirewallRuleset(t *testing.T) {
 			},
 			// Update and Read testing
 			{
-				Config: testAccConfigResourceConfig("firewall name TEST", `jsonencode({"default-action" = "accept"})`),
+				Config: testAccConfigResourceConfig("firewall ipv4 name TEST", `jsonencode({"default-action" = "accept"})`),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("vyos_config.test", "value", `{"default-action":"accept"}`),
 				),
@@ -47,7 +47,7 @@ func TestAccConfigResourceComplexFirewallRuleset(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccConfigResourceConfig("firewall name TEST",
+				Config: testAccConfigResourceConfig("firewall ipv4 name TEST",
 					`jsonencode({
 								default-action = "drop"
 								rule = {
@@ -57,8 +57,8 @@ func TestAccConfigResourceComplexFirewallRuleset(t *testing.T) {
 								}
 							})`),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("vyos_config.test", "id", "firewall name TEST"),
-					resource.TestCheckResourceAttr("vyos_config.test", "path", "firewall name TEST"),
+					resource.TestCheckResourceAttr("vyos_config.test", "id", "firewall ipv4 name TEST"),
+					resource.TestCheckResourceAttr("vyos_config.test", "path", "firewall ipv4 name TEST"),
 					resource.TestCheckResourceAttr("vyos_config.test", "value", `{"default-action":"drop","rule":{"10":{"action":"accept"}}}`),
 				),
 			},
@@ -71,7 +71,7 @@ func TestAccConfigResourceComplexFirewallRuleset(t *testing.T) {
 			},
 			// Update and Read testing
 			{
-				Config: testAccConfigResourceConfig("firewall name TEST", `jsonencode({"default-action" = "accept"})`),
+				Config: testAccConfigResourceConfig("firewall ipv4 name TEST", `jsonencode({"default-action" = "accept"})`),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("vyos_config.test", "value", `{"default-action":"accept"}`),
 				),
