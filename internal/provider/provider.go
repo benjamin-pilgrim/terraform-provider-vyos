@@ -197,6 +197,7 @@ func (p *VyOSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 func (p *VyOSProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewConfigResource,
+		NewConfigBatchResource,
 	}
 }
 

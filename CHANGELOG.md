@@ -1,7 +1,7 @@
 ## Unreleased
 
-- Reject HTTPS API self-configuration before mutation and fail on unexpected
-  asynchronous acknowledgments before saving or confirmation.
+- Add `vyos_config_batch` for named, disjoint path arrays with one configure/save
+  sequence, import support, drift refresh and failed-create cleanup identity.
 
 
 - Fix update persistence: create, update, and delete now share serialized
