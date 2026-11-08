@@ -11,7 +11,7 @@ import (
 func TestAccNativeValues(t *testing.T) {
 	config := func(action string) string {
 		return fmt.Sprintf(`
-provider "vyos" {}
+provider "vyos" { commit_confirm_minutes = 1 }
 resource "terraform_data" "action" { input = %q }
 resource "vyos_config" "test" {
  path = "firewall ipv4 name TF-PROVIDER-TEST"
@@ -42,7 +42,7 @@ resource "vyos_config" "test" {
 func TestAccNativeScalarListAndDefaultFlag(t *testing.T) {
 	config := func(value string) string {
 		return fmt.Sprintf(`
-provider "vyos" {}
+provider "vyos" { commit_confirm_minutes = 1 }
 resource "vyos_config" "test" {
  path = "system name-server"
  value = %s
@@ -77,10 +77,10 @@ resource "vyos_config" "flag" {
 	})
 }
 
-func TestAccNativeBatchValues(t *testing.T) {
+func TestAccNativeBatchCommitConfirm(t *testing.T) {
 	config := func(action string) string {
 		return fmt.Sprintf(`
-provider "vyos" {}
+provider "vyos" { commit_confirm_minutes = 1 }
 resource "terraform_data" "action" { input = %q }
 resource "vyos_config_batch" "test" {
  entries = {

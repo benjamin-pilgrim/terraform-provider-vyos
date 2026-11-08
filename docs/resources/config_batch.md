@@ -3,12 +3,12 @@
 page_title: "vyos_config_batch Resource - vyos"
 subcategory: ""
 description: |-
-  Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+  Manages named, disjoint VyOS subtrees in one configure request. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 ---
 
 # vyos_config_batch (Resource)
 
-Manages named, disjoint VyOS subtrees in one configure request. Uses the provider saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+Manages named, disjoint VyOS subtrees in one configure request. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; value changes update it in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 
 ## Example Usage
 

@@ -1,10 +1,16 @@
 package vyos
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // MutationError means a configure request was attempted. VyOS can partially
 // apply it even when the response fails; retain identity for cleanup.
-type MutationError struct{ Err error }
+type MutationError struct {
+	Err          error
+	PendingUntil time.Time
+}
 
 func (e *MutationError) Error() string { return e.Err.Error() }
 func (e *MutationError) Unwrap() error { return e.Err }

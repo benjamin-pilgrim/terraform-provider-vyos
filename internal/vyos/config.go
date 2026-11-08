@@ -14,11 +14,13 @@ import (
 // provider instance. Reads always fetch active config, including external drift.
 // Other provider instances and external writers are not coordinated.
 type VyosConfig struct {
-	apiClient    *Client
-	skipSaving   bool
-	saveFile     string
-	mutex        sync.Mutex
-	managedPaths map[string]pathClaim
+	apiClient      *Client
+	skipSaving     bool
+	pendingConfirm bool
+	confirmMinutes int64
+	saveFile       string
+	mutex          sync.Mutex
+	managedPaths   map[string]pathClaim
 }
 
 func New(c *Client, skipSaving bool, saveFile string) *VyosConfig {
@@ -224,15 +226,12 @@ func (vc *VyosConfig) mutate(ctx context.Context, path string, value any, mode s
 	if mode != "create" && current != nil {
 		ops = append([]map[string]any{{"op": "delete", "path": components}}, ops...)
 	}
-	if err := validateMutation(ops); err != nil {
-		return err
+	raw := ""
+	if mode != "delete" {
+		encoded, _ := json.Marshal(value)
+		raw = string(encoded)
 	}
-	if len(ops) > 0 {
-		if _, err := vc.apiClient.request(ctx, "configure", ops); err != nil {
-			return &MutationError{Err: err}
-		}
-	}
-	if err := vc.save(ctx); err != nil {
+	if _, err := vc.configure(ctx, ops, Batch{"resource": {Path: components, Value: raw}}); err != nil {
 		return err
 	}
 	if mode == "delete" {
