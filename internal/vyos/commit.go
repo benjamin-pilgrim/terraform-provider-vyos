@@ -3,6 +3,7 @@ package vyos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -35,15 +36,15 @@ func (vc *VyosConfig) configure(ctx context.Context, ops []map[string]any, desir
 	}
 	if vc.confirmMinutes > 0 {
 		if err := vc.verifyCommit(ctx, desired); err != nil {
-			return true, vc.mutationError(errors.New("cannot reach the router or verify the change; configuration was not confirmed or saved. VyOS will recover on timeout if the timer is running. Inspect the router before retrying"))
+			return true, vc.mutationError(fmt.Errorf("cannot reach the router or verify the change; configuration was not confirmed or saved. VyOS will recover on timeout if the timer is running. Inspect the router before retrying: %w", err))
 		}
 		if _, err := vc.apiClient.request(ctx, "config-file", map[string]any{"op": "confirm"}); err != nil {
-			return true, vc.mutationError(errors.New("confirmation failed or its response was lost; configuration was not saved. Inspect the router before retrying"))
+			return true, vc.mutationError(fmt.Errorf("confirmation failed or its response was lost; configuration was not saved. Inspect the router before retrying: %w", err))
 		}
 		// Confirmation is idempotent when no timer remains. Recheck so expiry
 		// between the first read and confirmation cannot report a false success.
 		if err := vc.verifyCommit(ctx, desired); err != nil {
-			return true, vc.mutationError(errors.New("the change could not be verified after confirmation, possibly because the timer expired; configuration was not saved. Inspect the router before retrying"))
+			return true, vc.mutationError(fmt.Errorf("the change could not be verified after confirmation, possibly because the timer expired; configuration was not saved. Inspect the router before retrying: %w", err))
 		}
 		vc.pendingConfirm = false
 	}

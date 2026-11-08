@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Add explicit bearer-token, mTLS and API-key token-exchange authentication modes.
+  Preserve API-key defaults, validate credential conflicts, refresh exchanged tokens
+  before expiry, and retain authentication on fresh commit-confirm connections.
+  Verify server TLS by default; cap mTLS at TLS 1.2 for current VyOS compatibility.
+
 - Add batch `include` entries for selected list values. Preserve unrelated values,
   detect owned-value drift, reject overlapping ownership, and retain attempted
   includes for cleanup after failed updates.

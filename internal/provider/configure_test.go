@@ -17,6 +17,25 @@ func TestConfigureSettings(t *testing.T) {
 		valid bool
 	}{
 		{name: "secure defaults", valid: true},
+		{name: "bearer", attrs: map[string]any{"auth_mode": "bearer", "api_key": "", "bearer_token": "signed.jwt.token"}, valid: true},
+		{name: "exchange", attrs: map[string]any{"auth_mode": "api_key_token"}, valid: true},
+		{name: "bearer environment", env: map[string]string{"VYOS_AUTH_MODE": "bearer", "VYOS_BEARER_TOKEN": "signed.jwt.token"}, attrs: map[string]any{"api_key": ""}, valid: true},
+		{name: "explicit auth overrides environment", env: map[string]string{"VYOS_AUTH_MODE": "bad", "VYOS_BEARER_TOKEN": "stale"}, attrs: map[string]any{"auth_mode": "api_key", "bearer_token": ""}, valid: true},
+		{name: "stale key environment", env: map[string]string{"VYOS_API_KEY": "stale"}, attrs: map[string]any{"auth_mode": "bearer", "api_key": nil, "bearer_token": "signed.jwt.token"}},
+		{name: "conflicting token", attrs: map[string]any{"bearer_token": "token"}},
+		{name: "bearer conflict", attrs: map[string]any{"auth_mode": "bearer", "bearer_token": "token"}},
+		{name: "missing bearer", attrs: map[string]any{"auth_mode": "bearer", "api_key": ""}},
+		{name: "invalid bearer", attrs: map[string]any{"auth_mode": "bearer", "api_key": "", "bearer_token": "secret\r\nX-Header:bad"}},
+		{name: "unknown bearer", attrs: map[string]any{"bearer_token": tftypes.UnknownValue}},
+		{name: "unknown mode", attrs: map[string]any{"auth_mode": tftypes.UnknownValue}},
+		{name: "unknown certificate", attrs: map[string]any{"client_certificate_file": tftypes.UnknownValue}},
+		{name: "unknown private key", attrs: map[string]any{"client_key_file": tftypes.UnknownValue}},
+		{name: "invalid mode", attrs: map[string]any{"auth_mode": "oidc"}},
+		{name: "missing exchange key", attrs: map[string]any{"auth_mode": "api_key_token", "api_key": ""}},
+		{name: "missing mtls pair", attrs: map[string]any{"auth_mode": "mtls", "api_key": ""}},
+		{name: "partial mtls pair", attrs: map[string]any{"auth_mode": "mtls", "api_key": "", "client_certificate_file": "cert.pem"}},
+		{name: "missing mtls files", attrs: map[string]any{"auth_mode": "mtls", "api_key": "", "client_certificate_file": "/missing/cert", "client_key_file": "/missing/key"}},
+		{name: "mtls conflicts", attrs: map[string]any{"auth_mode": "mtls", "client_certificate_file": "cert.pem", "client_key_file": "key.pem"}},
 		{name: "commit-confirm", attrs: map[string]any{"commit_confirm_minutes": 1}, valid: true},
 		{name: "invalid timer", attrs: map[string]any{"commit_confirm_minutes": -1}},
 		{name: "large timer", attrs: map[string]any{"commit_confirm_minutes": 61}},
@@ -39,7 +58,7 @@ func TestConfigureSettings(t *testing.T) {
 			p := &VyOSProvider{}
 			var schema provider.SchemaResponse
 			p.Schema(ctx, provider.SchemaRequest{}, &schema)
-			for _, n := range []string{"VYOS_ENDPOINT", "VYOS_API_KEY", "VYOS_SAVE_FILE", "VYOS_SKIP_SAVING", "VYOS_CA_CERTIFICATE_FILE", "VYOS_INSECURE"} {
+			for _, n := range []string{"VYOS_AUTH_MODE", "VYOS_BEARER_TOKEN", "VYOS_CLIENT_CERTIFICATE_FILE", "VYOS_CLIENT_KEY_FILE", "VYOS_ENDPOINT", "VYOS_API_KEY", "VYOS_SAVE_FILE", "VYOS_SKIP_SAVING", "VYOS_CA_CERTIFICATE_FILE", "VYOS_INSECURE"} {
 				t.Setenv(n, "")
 			}
 			for k, v := range tc.env {
