@@ -119,6 +119,25 @@ resource "vyos_config_batch" "test" { entries = %s }
 			{Config: config(first), Check: check(1, false)},
 			{Config: config(renamed), Check: check(1, false)},
 			{Config: config(narrowed), Check: check(1, false)},
+			{ResourceName: "vyos_config_batch.test", ImportState: true, ImportStateVerify: true,
+				// Import has no prior native value types, so it returns the
+				// supported legacy JSON representation. Verify its values below.
+				ImportStateVerifyIgnore: []string{"entries"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("expected one imported batch")
+					}
+					for key, want := range map[string]string{
+						"entries.adopted.value":    `"live"`,
+						"entries.child.value":      `"one"`,
+						"entries.whole_list.value": `["owned","foreign"]`,
+					} {
+						if states[0].Attributes[key] != want {
+							return fmt.Errorf("imported configuration differs at %s", key)
+						}
+					}
+					return nil
+				}},
 			{Config: config(cleanup), Check: check(2, true)},
 			{PreConfig: func() {
 				mu.Lock()

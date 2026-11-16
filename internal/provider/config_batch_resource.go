@@ -436,7 +436,13 @@ func (r *ConfigBatchResource) ImportState(ctx context.Context, req resource.Impo
 			return
 		}
 	}
-	identity, _ := vyos.OwnedBatchIdentity(entries, rand.Text())
+	owner := vyos.BatchOwner(req.ID)
+	if owner == req.ID {
+		// A selector-only import starts a new ownership identity. Reimporting
+		// an existing serialized resource ID preserves its owner token.
+		owner = rand.Text()
+	}
+	identity, _ := vyos.OwnedBatchIdentity(entries, owner)
 	models := map[string]batchEntryModel{}
 	for name, entry := range entries {
 		components, diagnostics := types.ListValueFrom(ctx, types.StringType, entry.Path)
