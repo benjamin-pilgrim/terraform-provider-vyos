@@ -113,3 +113,24 @@ func TestBatchExplicitAbsenceDeletesOnlySelectedSubtree(t *testing.T) {
 		t.Fatalf("satisfied absence was not a no-op: %v", err)
 	}
 }
+
+// Removing one include entry releases its members even when another entry
+// continues to own members of the same multivalue leaf.
+func TestRemovingIncludeEntryPreservesItsMembers(t *testing.T) {
+	vc, f := newBatchFixture(t, false, "")
+	ctx := context.Background()
+	prior := Batch{
+		"released": {Path: []string{"node", "values"}, Partial: true, Include: []string{"released"}},
+		"retained": {Path: []string{"node", "values"}, Partial: true, Include: []string{"retained"}},
+	}
+	if _, err := vc.MutateOwnedBatch(ctx, prior, nil, "create", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	next := Batch{"retained": prior["retained"]}
+	if attempted, err := vc.MutateOwnedBatch(ctx, next, prior, "update", "owner"); err != nil || attempted {
+		t.Fatalf("released include mutated router: %v", err)
+	}
+	if got := fixtureValues(t, f); !reflect.DeepEqual(got, []string{"released", "retained"}) {
+		t.Fatalf("released member disappeared: %v", got)
+	}
+}

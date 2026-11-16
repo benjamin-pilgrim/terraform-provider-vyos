@@ -345,6 +345,37 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			}
 		}
 	}
+	// Match retained selectors before calculating include removals. Entry labels
+	// can change, but a removed sibling selector on the same leaf is released.
+	retained := Batch{}
+	unmatched := maps.Clone(prior)
+	for name, entry := range entries {
+		if previous, ok := prior[name]; ok && entry.Partial && previous.Partial && pathKey(entry.Path) == pathKey(previous.Path) {
+			retained[name] = previous
+			delete(unmatched, name)
+		}
+	}
+	for _, name := range names {
+		entry := entries[name]
+		if !entry.Partial {
+			continue
+		}
+		if _, ok := retained[name]; ok {
+			continue
+		}
+		var candidates []string
+		for oldName, previous := range unmatched {
+			if previous.Partial && pathKey(previous.Path) == pathKey(entry.Path) {
+				candidates = append(candidates, oldName)
+			}
+		}
+		// A unique path match recognizes a rename. Ambiguous removed scopes
+		// are released rather than inferred as destructive include edits.
+		if len(candidates) == 1 {
+			retained[name] = unmatched[candidates[0]]
+			delete(unmatched, candidates[0])
+		}
+	}
 	for _, name := range names {
 		entry := entries[name]
 		value, present := current[name]
@@ -355,12 +386,7 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			}
 			existing := stringSet(actual)
 			wanted := entry.Include
-			old := []string{}
-			for _, previous := range prior {
-				if previous.Partial && pathKey(previous.Path) == pathKey(entry.Path) {
-					old = append(old, previous.Include...)
-				}
-			}
+			old := retained[name].Include
 			if mode == "create" {
 				old = nil
 			}
