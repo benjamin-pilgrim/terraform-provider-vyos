@@ -102,7 +102,7 @@ func packBatchModels(ctx context.Context, models map[string]batchEntryModel) (ty
 			v = types.DynamicUnknown()
 		}
 		if v == nil {
-			v = types.StringNull()
+			v = types.DynamicNull()
 		}
 		field := "value"
 		if model.Partial {

@@ -58,11 +58,11 @@ func (vc *VyosConfig) configure(ctx context.Context, ops []map[string]any, desir
 	if vc.confirmMinutes == 0 {
 		partial := false
 		for _, entry := range desired {
-			partial = partial || entry.Partial
+			partial = partial || entry.Partial || entry.Absent
 		}
 		if partial {
 			if err := vc.verifyCommit(ctx, desired); err != nil {
-				return true, vc.mutationError(errors.New("include verification failed; use include only for multivalue leaves and inspect the active configuration. Configuration was not saved"))
+				return true, vc.mutationError(errors.New("selection verification failed; inspect the active configuration. Configuration was not saved"))
 			}
 		}
 	}

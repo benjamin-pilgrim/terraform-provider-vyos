@@ -155,7 +155,7 @@ func TestBatchOneCommitAndSave(t *testing.T) {
 }
 
 func TestBatchPreflightRejectsExistingAndInvalidPaths(t *testing.T) {
-	for _, name := range []string{"existing", "invalid value", "overlap", "duplicate", "empty component", "empty batch"} {
+	for _, name := range []string{"existing", "invalid value", "overlap", "duplicate", "empty component"} {
 		t.Run(name, func(t *testing.T) {
 			vc, fixture := newBatchFixture(t, false, "")
 			entries := sampleBatch()
@@ -170,8 +170,6 @@ func TestBatchPreflightRejectsExistingAndInvalidPaths(t *testing.T) {
 				entries["copy"] = entries["flag"]
 			case "empty component":
 				entries["flag"] = BatchEntry{Path: []string{"node", ""}, Value: `{}`}
-			case "empty batch":
-				entries = Batch{}
 			}
 			attempted, err := vc.MutateBatch(context.Background(), entries, "create")
 			if err == nil || attempted {

@@ -23,8 +23,8 @@ func TestAccConfigBatch(t *testing.T) {
 			{ResourceName: "vyos_config_batch.test", ImportState: true, ImportStateVerify: true},
 			{Config: testAccBatchConfig("accept", "first", ""), Check: testAccNativeBatch()},
 			{Config: testAccBatchConfig("accept", "first", ""), PlanOnly: true},
-			// A changed entry name/path set is explicitly replaced, rather than
-			// silently dropping ownership of the original paths.
+			// Renaming an entry updates its ownership inventory in place while
+			// keeping the same paths and preserving the batch owner.
 			{Config: testAccBatchConfig("drop", "renamed", ""), Check: testAccNativeBatch()},
 		},
 	})

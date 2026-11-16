@@ -3,12 +3,12 @@
 page_title: "vyos_config_batch Resource - vyos"
 subcategory: ""
 description: |-
-  Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; changing ownership mode requires state migration. Values and includes update in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+  Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 ---
 
 # vyos_config_batch (Resource)
 
-Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; changing ownership mode requires state migration. Values and includes update in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 
 ## Example Usage
 
@@ -18,6 +18,11 @@ resource "vyos_config_batch" "policies" {
     ingress = {
       path  = ["firewall", "ipv4", "name", "APP-INGRESS"]
       value = { "default-action" = "drop" }
+    }
+    # Keep an obsolete subtree absent without dropping its ownership silently.
+    retired_ingress = {
+      path  = ["firewall", "ipv4", "name", "OLD-INGRESS"]
+      value = null
     }
     dns_clients = {
       path    = ["service", "dns", "forwarding", "allow-from"]
@@ -32,7 +37,7 @@ resource "vyos_config_batch" "policies" {
 
 ### Required
 
-- `entries` (Dynamic, Sensitive) Object of named entries, each containing path and exactly one of value or include. value owns the whole subtree; include is a collection of strings and owns only those list values. Unrelated list values remain untouched. Ownership must not overlap. Values remain in Terraform state.
+- `entries` (Dynamic, Sensitive) Object of named entries, each containing path and exactly one of value or include. value = null requires the path to be absent; other values own the whole subtree; include is a collection of strings and owns only those list values. Unrelated list values remain untouched. Ownership must not overlap. Values remain in Terraform state.
 
 ### Read-Only
 

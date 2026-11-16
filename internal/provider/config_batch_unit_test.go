@@ -72,8 +72,12 @@ func TestBatchCreateFailureRetainsIdentityOnlyAfterAttempt(t *testing.T) {
 			}
 			if attempted {
 				var retained ConfigBatchModel
-				if diagnostics := response.State.Get(ctx, &retained); diagnostics.HasError() || retained.ID != model.ID {
+				if diagnostics := response.State.Get(ctx, &retained); diagnostics.HasError() || retained.ID.IsNull() {
 					t.Fatalf("lost batch cleanup identity: %v", diagnostics)
+				}
+				scopes, err := vyos.ParseBatchIdentity(retained.ID.ValueString())
+				if err != nil || len(scopes) != 2 || len(scopes["a"].Path) != 2 || scopes["a"].Path[1] != "a" {
+					t.Fatal("failed create lost its owned cleanup paths")
 				}
 			}
 			for _, diagnostic := range response.Diagnostics {
@@ -119,7 +123,7 @@ func TestBatchReadPartialDriftAndPlanIdentity(t *testing.T) {
 		}
 		response := resource.ModifyPlanResponse{Plan: plan}
 		r.ModifyPlan(ctx, resource.ModifyPlanRequest{State: read.State, Plan: plan}, &response)
-		if response.Diagnostics.HasError() || (len(response.RequiresReplace) > 0) != changedPaths {
+		if response.Diagnostics.HasError() || len(response.RequiresReplace) != 0 {
 			t.Fatalf("incorrect replacement decision: changed paths=%v, response=%v", changedPaths, response)
 		}
 	}
@@ -150,7 +154,7 @@ func TestBatchValidationAndUnknownValues(t *testing.T) {
 	r := &ConfigBatchResource{}
 	var schema resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &schema)
-	for _, tc := range []string{"valid unknown value", "valid unknown path component", "empty", "invalid value", "overlapping", "null entry", "null path component"} {
+	for _, tc := range []string{"valid unknown value", "valid unknown path component", "valid empty", "invalid value", "overlapping", "null entry", "null path component"} {
 		t.Run(tc, func(t *testing.T) {
 			model := batchModel(t, map[string]string{"a": `"one"`, "b": `{}`})
 			models, diagnostics := batchModels(ctx, model.Entries)
@@ -170,7 +174,7 @@ func TestBatchValidationAndUnknownValues(t *testing.T) {
 				entry := models["a"]
 				entry.Path, _ = types.ListValue(types.StringType, []attr.Value{types.StringValue("node"), types.StringNull()})
 				models["a"] = entry
-			case "empty":
+			case "valid empty":
 				models = map[string]batchEntryModel{}
 			case "invalid value":
 				entry := models["a"]
@@ -197,7 +201,7 @@ func TestBatchValidationAndUnknownValues(t *testing.T) {
 			config.Raw = state.Raw
 			response := resource.ValidateConfigResponse{}
 			r.ValidateConfig(ctx, resource.ValidateConfigRequest{Config: config}, &response)
-			if response.Diagnostics.HasError() == strings.HasPrefix(tc, "valid unknown") {
+			if response.Diagnostics.HasError() == strings.HasPrefix(tc, "valid") {
 				t.Fatalf("incorrect validation result: %v", response.Diagnostics)
 			}
 		})

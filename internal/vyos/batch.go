@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"sort"
 	"strings"
 	"unicode"
@@ -14,6 +15,7 @@ import (
 type BatchEntry struct {
 	Path     []string
 	Value    string
+	Absent   bool // Explicitly require the whole path to be absent.
 	Partial  bool
 	Include  []string
 	Exclude  []string // Verification-only values that must be absent.
@@ -95,15 +97,14 @@ func (vc *VyosConfig) release(path []string) {
 // BatchIdentity records names, exact path components and ownership modes,
 // independently of values. The provider uses this to validate ownership scopes.
 func BatchIdentity(entries Batch) (string, error) {
-	if len(entries) == 0 {
-		return "", errors.New("a batch must contain at least one entry")
-	}
 	identity := map[string]any{}
 	for name, entry := range entries {
 		if strings.TrimSpace(name) == "" || strings.IndexFunc(name, unicode.IsControl) >= 0 {
 			return "", errors.New("batch entry names must be nonempty and contain no control characters")
 		}
-		if entry.Partial {
+		if entry.Absent {
+			identity[name] = map[string]any{"path": entry.Path, "delete": true}
+		} else if entry.Partial {
 			identity[name] = map[string]any{"path": entry.Path, "include": true}
 		} else {
 			identity[name] = entry.Path
@@ -139,6 +140,14 @@ func ParseBatchIdentity(raw string) (Batch, error) {
 			entries[name] = BatchEntry{Path: components}
 			continue
 		}
+		var absent struct {
+			Path   []string `json:"path"`
+			Delete bool     `json:"delete"`
+		}
+		if json.Unmarshal(raw, &absent) == nil && absent.Delete {
+			entries[name] = BatchEntry{Path: absent.Path, Absent: true}
+			continue
+		}
 		var partial struct {
 			Path    []string        `json:"path"`
 			Include json.RawMessage `json:"include"`
@@ -158,22 +167,28 @@ func ParseBatchIdentity(raw string) (Batch, error) {
 	return entries, nil
 }
 
-// OwnedBatchIdentity gives partial batches distinct ownership even when their
-// paths are identical. Existing complete-value IDs retain their original form.
+// OwnedBatchIdentity gives each batch a stable owner token alongside its current
+// selector inventory. ParseBatchIdentity also accepts legacy unwrapped IDs.
 func OwnedBatchIdentity(entries Batch, owner string) (string, error) {
 	identity, err := BatchIdentity(entries)
 	if err != nil {
 		return "", err
 	}
-	partial := false
-	for _, entry := range entries {
-		partial = partial || entry.Partial
-	}
-	if !partial {
-		return identity, nil
-	}
+
 	raw, _ := json.Marshal(map[string]any{"_entries": json.RawMessage(identity), "_owner": owner})
 	return string(raw), nil
+}
+
+// BatchOwner is stable while the identity's selector metadata changes. Legacy
+// unwrapped IDs use their original serialized identity as the ownership token.
+func BatchOwner(identity string) string {
+	var envelope struct {
+		Owner string `json:"_owner"`
+	}
+	if json.Unmarshal([]byte(identity), &envelope) == nil && envelope.Owner != "" {
+		return envelope.Owner
+	}
+	return identity
 }
 
 func batchNames(entries Batch) []string {
@@ -227,6 +242,13 @@ func (vc *VyosConfig) ShowOwnedBatch(ctx context.Context, entries Batch, owner s
 		return nil, err
 	}
 	for name, entry := range entries {
+		if entry.Absent {
+			// Absence is still a managed constraint, including when it holds.
+			if _, present := values[name]; !present {
+				values[name] = nil
+			}
+			continue
+		}
 		if entry.Partial {
 			actual, err := listValues(values[name])
 			if err != nil {
@@ -276,7 +298,7 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 	sets := map[string][]map[string]any{}
 	for _, name := range names {
 		entry := entries[name]
-		if mode != "delete" && !entry.Partial {
+		if mode != "delete" && !entry.Partial && !entry.Absent {
 			value, err := DecodeValue(entry.Value)
 			if err != nil {
 				return false, err
@@ -289,6 +311,12 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 	}
 	vc.mutex.Lock()
 	defer vc.mutex.Unlock()
+	oldClaims := maps.Clone(vc.managedPaths)
+	defer func() {
+		if err != nil && !attempted {
+			vc.managedPaths = oldClaims
+		}
+	}()
 	if err := vc.claimBatch(entries, owner); err != nil {
 		return false, err
 	}
@@ -327,7 +355,12 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			}
 			existing := stringSet(actual)
 			wanted := entry.Include
-			old := prior[name].Include
+			old := []string{}
+			for _, previous := range prior {
+				if previous.Partial && pathKey(previous.Path) == pathKey(entry.Path) {
+					old = append(old, previous.Include...)
+				}
+			}
 			if mode == "create" {
 				old = nil
 			}
@@ -354,8 +387,12 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			continue
 		}
 		desired[name] = entry
-		if mode == "delete" {
-			desired[name] = BatchEntry{Path: entry.Path}
+		if mode == "delete" || entry.Absent {
+			desired[name] = BatchEntry{Path: entry.Path, Absent: entry.Absent}
+			if present {
+				deletes = append(deletes, map[string]any{"op": "delete", "path": entry.Path})
+			}
+			continue
 		}
 		if mode == "create" && present {
 			return false, errors.New("batch path already exists; import the batch before managing existing configuration")
@@ -407,17 +444,15 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			return attempted, err
 		}
 	}
-	for _, entry := range prior {
-		if entry.Partial {
-			keep := wantedByPath[pathKey(entry.Path)]
-			for _, member := range entry.Include {
-				if mode == "delete" || !keep[member] {
-					delete(vc.managedPaths, memberKey(entry.Path, member))
-				}
-			}
-		} else if mode == "delete" {
-			vc.release(entry.Path)
+	// Forget departed selectors without touching their live configuration.
+	for key, claim := range vc.managedPaths {
+		if claim.owner == owner {
+			delete(vc.managedPaths, key)
 		}
 	}
+	if mode != "delete" {
+		_ = vc.claimBatch(entries, owner)
+	}
+
 	return len(operations) > 0, nil
 }

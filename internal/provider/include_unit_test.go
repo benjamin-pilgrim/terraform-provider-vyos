@@ -90,8 +90,8 @@ func TestIncludeReadDoesNotAdoptOtherValuesOrLoseMissingOwnership(t *testing.T) 
 	}
 	modify = resource.ModifyPlanResponse{Plan: plan}
 	r.ModifyPlan(ctx, resource.ModifyPlanRequest{State: state, Plan: plan}, &modify)
-	if !modify.Diagnostics.HasError() || len(modify.RequiresReplace) != 0 {
-		t.Fatal("ownership-mode change was not blocked before replacement")
+	if modify.Diagnostics.HasError() || len(modify.RequiresReplace) != 0 {
+		t.Fatal("ownership-mode change did not update in place")
 	}
 }
 func TestIncludeValidationAndCollectionTypes(t *testing.T) {

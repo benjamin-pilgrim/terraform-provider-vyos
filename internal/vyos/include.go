@@ -58,6 +58,9 @@ func validateBatchEntries(entries Batch) error {
 		if err := validatePaths([][]string{entry.Path}); err != nil {
 			return err
 		}
+		if entry.Partial && entry.Absent {
+			return errors.New("absence cannot use include ownership")
+		}
 		if entry.Partial {
 			if err := ValidateInclude(entry.Include); err != nil {
 				return err
@@ -100,9 +103,9 @@ func (vc *VyosConfig) claimBatch(entries Batch, owner string) error {
 			claims[pathKey(entry.Path)] = pathClaim{path: entry.Path, owner: owner}
 		}
 	}
-	for key, claim := range claims {
-		for otherKey, other := range vc.managedPaths {
-			if key == otherKey && owner == other.owner {
+	for _, claim := range claims {
+		for _, other := range vc.managedPaths {
+			if owner == other.owner {
 				continue
 			}
 			if !pathsOverlap(claim.path, other.path) {

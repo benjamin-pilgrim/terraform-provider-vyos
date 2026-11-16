@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
@@ -50,14 +49,14 @@ func (r *ConfigBatchResource) Metadata(ctx context.Context, req resource.Metadat
 func (r *ConfigBatchResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Version:             1,
-		MarkdownDescription: "Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Changing entry names or paths replaces the batch; changing ownership mode requires state migration. Values and includes update in place. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
+		MarkdownDescription: "Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true, MarkdownDescription: "Batch identity. Import whole-value entries with path arrays, or partial entries with path and explicit include arrays.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"entries": schema.DynamicAttribute{
-				Required: true, Sensitive: true, MarkdownDescription: "Object of named entries, each containing path and exactly one of value or include. value owns the whole subtree; include is a collection of strings and owns only those list values. Unrelated list values remain untouched. Ownership must not overlap. Values remain in Terraform state.",
+				Required: true, Sensitive: true, MarkdownDescription: "Object of named entries, each containing path and exactly one of value or include. value = null requires the path to be absent; other values own the whole subtree; include is a collection of strings and owns only those list values. Unrelated list values remain untouched. Ownership must not overlap. Values remain in Terraform state.",
 			},
 		},
 	}
@@ -96,12 +95,14 @@ func decodeBatch(ctx context.Context, values types.Dynamic, requireValues bool) 
 		if model.Partial {
 			field = "include"
 		}
-		if requireValues && (model.Value.IsNull() || model.Value.IsUnknown()) {
+		if requireValues && (model.Value.IsUnknown() || (model.Partial && (model.Value.IsNull() || model.Value.IsUnderlyingValueNull()))) {
 			diagnostics.AddAttributeError(location.AtName(field), "Unknown configuration value", "Each batch entry must have a known configuration value before applying.")
 		}
 		entry := vyos.BatchEntry{Path: components, Partial: model.Partial}
 		var err error
-		if model.Partial {
+		if !model.Partial && (model.Value.IsNull() || model.Value.IsUnderlyingValueNull()) {
+			entry.Absent = true
+		} else if model.Partial {
 			entry.Include, err = includeStrings(model.Value)
 		} else {
 			entry.Value, err = configurationJSON(model.Value)
@@ -200,16 +201,10 @@ func (r *ConfigBatchResource) ModifyPlan(ctx context.Context, req resource.Modif
 		resp.Diagnostics.AddError("Invalid batch identity", err.Error())
 		return
 	}
-	for _, entry := range entries {
-		for _, old := range priorEntries {
-			if slices.Equal(entry.Path, old.Path) && entry.Partial != old.Partial {
-				resp.Diagnostics.AddAttributeError(path.Root("entries"), "Ownership mode changed", "Switch between value and include by removing the batch from Terraform state without destroying it, then importing it with the new ownership selectors. Direct replacement could delete values that should remain unmanaged.")
-				return
-			}
-		}
-	}
 	if identity != priorIdentity {
-		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("entries"))
+		// The batch remains in place; only its serialized selector inventory
+		// changes. Its owner token is retained by Update.
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
 	}
 }
 
@@ -229,7 +224,7 @@ func (r *ConfigBatchResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError("Invalid batch identity", err.Error())
 		return
 	}
-	attempted, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, nil, "create", identity)
+	attempted, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, nil, "create", vyos.BatchOwner(identity))
 	if err != nil && resp.Private != nil {
 		resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
 	}
@@ -272,12 +267,12 @@ func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest
 			entries[name] = entry
 		}
 	}
-	current, err := r.vyosConfig.ShowOwnedBatch(ctx, entries, data.ID.ValueString())
+	current, err := r.vyosConfig.ShowOwnedBatch(ctx, entries, vyos.BatchOwner(data.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read configuration batch", err.Error())
 		return
 	}
-	if len(current) == 0 {
+	if len(current) == 0 && len(entries) > 0 {
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -296,7 +291,12 @@ func (r *ConfigBatchResource) Read(ctx context.Context, req resource.ReadRequest
 			priorValue = model.Value
 		}
 		var refreshedValue types.Dynamic
-		if entries[name].Partial {
+		if entries[name].Absent && value == nil {
+			refreshedValue = priorValue
+			if !priorValue.IsNull() && !priorValue.IsUnderlyingValueNull() {
+				refreshedValue = types.DynamicNull()
+			}
+		} else if entries[name].Partial {
 			refreshedValue = refreshInclude(priorValue, value.([]string))
 		} else {
 			refreshedValue = refreshConfiguration(priorValue, value)
@@ -339,31 +339,41 @@ func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	identity, _ := vyos.BatchIdentity(entries)
-	identityEntries, err := vyos.ParseBatchIdentity(data.ID.ValueString())
-	originalIdentity, _ := vyos.BatchIdentity(identityEntries)
+	var prior ConfigBatchModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	original, err := vyos.ParseBatchIdentity(prior.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid batch identity", err.Error())
 		return
 	}
+	identity, _ := vyos.BatchIdentity(entries)
+	originalIdentity, _ := vyos.BatchIdentity(original)
+	owner := vyos.BatchOwner(prior.ID.ValueString())
+	data.ID = prior.ID
 	if identity != originalIdentity {
-		resp.Diagnostics.AddError("Batch paths changed", "Changing batch entry names or paths requires replacement.")
-		return
+		updated, err := vyos.OwnedBatchIdentity(entries, owner)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid batch identity", err.Error())
+			return
+		}
+		data.ID = types.StringValue(updated)
 	}
-	var prior ConfigBatchModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
 	previous, d := decodeBatch(ctx, prior.Entries, true)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if attempted, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, previous, "update", data.ID.ValueString()); err != nil {
+
+	if attempted, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, previous, "update", owner); err != nil {
 		if attempted {
 			owned, d := retainIncludeOwnership(ctx, prior.Entries, data.Entries)
 			resp.Diagnostics.Append(d...)
 			if !d.HasError() {
-				prior.Entries = owned
-				resp.Diagnostics.Append(resp.State.Set(ctx, &prior)...)
+				data.Entries = owned
+				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 			}
 		}
 		if resp.Private != nil {
@@ -406,7 +416,7 @@ func (r *ConfigBatchResource) Delete(ctx context.Context, req resource.DeleteReq
 			entries[name] = entry
 		}
 	}
-	if _, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, entries, "delete", data.ID.ValueString()); err != nil {
+	if _, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, entries, "delete", vyos.BatchOwner(data.ID.ValueString())); err != nil {
 		if resp.Private != nil {
 			resp.Diagnostics.Append(recordPendingOperation(ctx, resp.Private, err)...)
 		}

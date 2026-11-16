@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -107,7 +108,14 @@ func retainIncludeOwnership(ctx context.Context, prior, planned types.Dynamic) (
 			owned[key][member] = true
 		}
 	}
-	for name, entry := range before {
+	// Only retained partial paths keep possibly applied members. Departed
+	// selectors and whole-to-partial transitions release their previous scope.
+	names := make([]string, 0, len(after))
+	for name := range after {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, entry := range before {
 		if !entry.Partial {
 			continue
 		}
@@ -119,24 +127,31 @@ func retainIncludeOwnership(ctx context.Context, prior, planned types.Dynamic) (
 		path, _ := entry.Path.ToTerraformValue(ctx)
 		key := path.String()
 		if owned[key] == nil {
-			owned[key] = map[string]bool{}
+			continue
 		}
-		for _, member := range members {
-			if !owned[key][member] {
-				values[name] = append(values[name], member)
-				owned[key][member] = true
+		for _, name := range names {
+			target := after[name]
+			if !target.Partial || !target.Path.Equal(entry.Path) {
+				continue
 			}
+			for _, member := range members {
+				if !owned[key][member] {
+					values[name] = append(values[name], member)
+					owned[key][member] = true
+				}
+			}
+			break
 		}
 	}
 	for name, members := range values {
 		entry := after[name]
 		entry.Value = refreshInclude(entry.Value, members)
-		before[name] = entry
+		after[name] = entry
 	}
 	if diagnostics.HasError() {
 		return prior, diagnostics
 	}
-	result, d := packBatchModels(ctx, before)
+	result, d := packBatchModels(ctx, after)
 	diagnostics.Append(d...)
 	return result, diagnostics
 }

@@ -97,10 +97,18 @@ values; arrays and sets are accepted, and router ordering is ignored. Use it onl
 on multivalue leaves; a scalar leaf cannot safely represent shared list ownership.
 
 Disjoint includes can share a list. Duplicate ownership of a value, or overlap
-with whole-value ownership, is rejected within one provider instance. Changing
-entry names or paths replaces the batch. To switch an existing path between
-`value` and `include`, remove the batch from state without destroying it, then
-import it with the new ownership selectors. Direct mode changes are blocked.
+with whole-value ownership, is rejected within one provider instance. Entry
+renames, path changes and switches between `value` and `include` update the same
+batch in place. Newly selected paths are read from active configuration before
+calculating mutations. Removed paths are forgotten without deleting their
+configuration. Narrowing a parent selector releases its other descendants.
+
+Use `value = null` to explicitly require a subtree to be absent. The provider
+deletes that subtree and repairs later drift that recreates it. An empty
+`entries = {}` releases all selectors without changing the router. Destroy still
+deletes the currently owned configuration. Changing a retained `include` list
+removes only its previously owned members that are no longer included; removing
+that entry entirely releases the list without deleting its members.
 
 Provider saving and commit-confirm settings apply to both modes. Use `depends_on`
 between batches when one needs settings created by another. Failed attempted
@@ -121,8 +129,11 @@ Use an explicit router save to persist changes already active.
 Configure and save calls are serialized within one provider instance. Reads fetch
 fresh active configuration every time; retrieval/authentication/transport errors
 produce diagnostics and retain state. A path is removed from state only after a
-successful read proves it absent. Whole-value configuration must be imported before adoption, including existing
-flags. Include entries adopt only the explicitly listed values.
+successful read proves it absent, except that explicit absence constraints and
+empty batches remain managed. Creating a batch over existing whole-value settings
+requires import, including existing flags. Adding selectors to an existing batch
+adopts their live configuration before applying its desired values. Include
+entries adopt only the explicitly listed values.
 
 Set `commit_confirm_minutes = 2` in the provider to enable a rollback timer for
 each create, update and destroy. The provider checks a fresh API connection and the changed
