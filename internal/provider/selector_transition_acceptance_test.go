@@ -57,7 +57,11 @@ func TestAccSelectorTransitions(t *testing.T) {
 								kept = append(kept, v)
 							}
 						}
-						node[leaf] = kept
+						if len(kept) == 0 {
+							delete(node, leaf)
+						} else {
+							node[leaf] = kept
+						}
 					}
 				} else if op.Value != nil {
 					node[leaf] = *op.Value
@@ -108,7 +112,7 @@ resource "vyos_config_batch" "test" { entries = %s }
 				return fmt.Errorf("adoption changed unowned sibling")
 			}
 			if (node["created"].(map[string]any)["released"] == nil) != absent {
-				return fmt.Errorf("released subtree did not match explicit deletion intent")
+				return fmt.Errorf("departed subtree did not match deletion intent")
 			}
 			return nil
 		}
@@ -118,7 +122,7 @@ resource "vyos_config_batch" "test" { entries = %s }
 		Steps: []resource.TestStep{
 			{Config: config(first), Check: check(1, false)},
 			{Config: config(renamed), Check: check(1, false)},
-			{Config: config(narrowed), Check: check(1, false)},
+			{Config: config(narrowed), Check: check(2, true)},
 			{ResourceName: "vyos_config_batch.test", ImportState: true, ImportStateVerify: true,
 				// Import has no prior native value types, so it returns the
 				// supported legacy JSON representation. Verify its values below.
@@ -138,19 +142,19 @@ resource "vyos_config_batch" "test" { entries = %s }
 					}
 					return nil
 				}},
-			{Config: config(cleanup), Check: check(2, true)},
+			{Config: config(cleanup), Check: check(3, true)},
 			{PreConfig: func() {
 				mu.Lock()
 				defer mu.Unlock()
 				tree["node"].(map[string]any)["created"].(map[string]any)["released"] = "drift"
-			}, Config: config(cleanup), Check: check(3, true)},
-			{Config: config(`{}`), Check: check(3, true)},
+			}, Config: config(cleanup), Check: check(4, true)},
+			{Config: config(`{}`), Check: check(5, true)},
 		},
 		CheckDestroy: func(_ *terraform.State) error {
 			mu.Lock()
 			defer mu.Unlock()
-			if writes != 3 || tree["node"].(map[string]any)["created"].(map[string]any)["kept"] != "one" {
-				return fmt.Errorf("destroy after releasing selectors removed former configuration")
+			if writes != 5 || tree["node"].(map[string]any)["created"].(map[string]any)["kept"] != nil {
+				return fmt.Errorf("removing all entries did not delete former configuration")
 			}
 			return nil
 		},

@@ -3,12 +3,12 @@
 page_title: "vyos_config_batch Resource - vyos"
 subcategory: ""
 description: |-
-  Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+  Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removing entries deletes their previously owned configuration; removing includes deletes only their owned members. Path changes delete the old selection, and narrowing a parent deletes departed descendants. Use value = null to enforce continued subtree absence. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 ---
 
 # vyos_config_batch (Resource)
 
-Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
+Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removing entries deletes their previously owned configuration; removing includes deletes only their owned members. Path changes delete the old selection, and narrowing a parent deletes departed descendants. Use value = null to enforce continued subtree absence. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.
 
 ## Example Usage
 

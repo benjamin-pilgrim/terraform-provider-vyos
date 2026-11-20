@@ -38,6 +38,8 @@ func newBatchFixture(t *testing.T, skip bool, file string) (*VyosConfig, *batchF
 		case "/retrieve":
 			data = fixture.tree
 		case "/configure":
+			// Each HTTP request is independent; do not retain fields in decoded maps.
+			fixture.ops = nil
 			raw := []byte(r.FormValue("data"))
 			if strings.HasPrefix(string(raw), "{") {
 				var request struct {

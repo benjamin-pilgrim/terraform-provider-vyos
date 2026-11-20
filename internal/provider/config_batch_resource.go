@@ -49,7 +49,7 @@ func (r *ConfigBatchResource) Metadata(ctx context.Context, req resource.Metadat
 func (r *ConfigBatchResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Version:             1,
-		MarkdownDescription: "Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removed entries are forgotten without deleting router configuration. Use value = null for explicit subtree deletion; edits to retained includes update only owned members. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
+		MarkdownDescription: "Manages named VyOS configuration entries in one configure request. Use value for whole-value ownership or include for ownership of selected list values. Uses the provider commit-confirm and saving settings. Unrelated configuration is preserved. Selector changes update ownership in place. Removing entries deletes their previously owned configuration; removing includes deletes only their owned members. Path changes delete the old selection, and narrowing a parent deletes departed descendants. Use value = null to enforce continued subtree absence. VyOS can partially apply a failed request across components; a batch is not a whole-router transaction.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true, MarkdownDescription: "Batch identity. Import whole-value entries with path arrays, or partial entries with path and explicit include arrays.",
@@ -369,11 +369,21 @@ func (r *ConfigBatchResource) Update(ctx context.Context, req resource.UpdateReq
 
 	if attempted, err := r.vyosConfig.MutateOwnedBatch(ctx, entries, previous, "update", owner); err != nil {
 		if attempted {
-			owned, d := retainIncludeOwnership(ctx, prior.Entries, data.Entries)
+			owned, d := retainBatchOwnership(ctx, prior.Entries, data.Entries)
 			resp.Diagnostics.Append(d...)
 			if !d.HasError() {
 				data.Entries = owned
-				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+				recovered, d := decodeBatch(ctx, owned, true)
+				resp.Diagnostics.Append(d...)
+				if !d.HasError() {
+					identity, identityErr := vyos.OwnedBatchIdentity(recovered, owner)
+					if identityErr != nil {
+						resp.Diagnostics.AddError("Invalid recovery identity", identityErr.Error())
+					} else {
+						data.ID = types.StringValue(identity)
+						resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+					}
+				}
 			}
 		}
 		if resp.Private != nil {

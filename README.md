@@ -126,19 +126,30 @@ Disjoint includes can share a list. Duplicate ownership of a value, or overlap
 with whole-value ownership, is rejected within one provider instance. Entry
 renames, path changes and switches between `value` and `include` update the same
 batch in place. Newly selected paths are read from active configuration before
-calculating mutations. Removed paths are forgotten without deleting their
-configuration. Narrowing a parent selector releases its other descendants.
+calculating mutations. Removing an entry deletes its previously owned
+configuration. Changing its path deletes the old selection, and narrowing a
+parent selector deletes descendants that are no longer selected. Renaming an
+entry while keeping its selection and value does not rewrite configuration.
 
-Use `value = null` to explicitly require a subtree to be absent. The provider
-deletes that subtree and repairs later drift that recreates it. An empty
-`entries = {}` releases all selectors without changing the router. Destroy still
-deletes the currently owned configuration. Changing a retained `include` list
-removes only its previously owned members that are no longer included; removing
-that entry entirely releases the list without deleting its members.
+An empty `entries = {}` deletes all configuration owned by the batch. Changing
+an `include` list or removing that entry deletes only its previously owned
+members, preserving unrelated values. Switching from whole-value ownership to
+`include` removes values that were previously owned but are no longer included.
+Destroy deletes the currently owned configuration.
+
+Use `value = null` to require a subtree to stay absent: the provider deletes it
+and repairs later drift that recreates it. An explicit absence entry is not
+needed to remove a previously managed entry. Removing an absence entry stops
+enforcing that constraint.
+
+To transfer configuration without deleting it, forget the source batch using
+Terraform's state removal workflow without destroy, then import its selections
+into the destination. Omission from `entries` is a deletion, not a transfer.
 
 Provider saving and commit-confirm settings apply to both modes. Use `depends_on`
 between batches when one needs settings created by another. Failed attempted
-changes retain ownership for cleanup, including newly attempted includes.
+changes retain both old and newly attempted ownership in state for refresh and
+cleanup, including includes.
 
 See [the batch resource](docs/resources/config_batch.md) for import syntax.
 

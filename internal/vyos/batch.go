@@ -285,7 +285,7 @@ func (vc *VyosConfig) MutateBatch(ctx context.Context, entries Batch, mode strin
 }
 
 // MutateOwnedBatch uses the stable resource ID to claim ownership; prior carries
-// the previously owned selections so removed includes can be deleted precisely.
+// the previously owned selections so departed configuration can be deleted precisely.
 func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch, mode, owner string) (attempted bool, err error) {
 	if mode != "create" && mode != "update" && mode != "delete" {
 		return false, errors.New("invalid batch mutation")
@@ -325,9 +325,19 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			return false, err
 		}
 	}
-	current, err := vc.batchSnapshot(ctx, entries)
+	root, err := vc.snapshot(ctx)
 	if err != nil {
 		return false, err
+	}
+	current := map[string]any{}
+	for name, entry := range entries {
+		value, err := configNode(root, entry.Path)
+		if err != nil {
+			return false, err
+		}
+		if value != nil {
+			current[name] = value
+		}
 	}
 	var deletes, writes []map[string]any
 	desired := Batch{}
@@ -345,37 +355,6 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			}
 		}
 	}
-	// Match retained selectors before calculating include removals. Entry labels
-	// can change, but a removed sibling selector on the same leaf is released.
-	retained := Batch{}
-	unmatched := maps.Clone(prior)
-	for name, entry := range entries {
-		if previous, ok := prior[name]; ok && entry.Partial && previous.Partial && pathKey(entry.Path) == pathKey(previous.Path) {
-			retained[name] = previous
-			delete(unmatched, name)
-		}
-	}
-	for _, name := range names {
-		entry := entries[name]
-		if !entry.Partial {
-			continue
-		}
-		if _, ok := retained[name]; ok {
-			continue
-		}
-		var candidates []string
-		for oldName, previous := range unmatched {
-			if previous.Partial && pathKey(previous.Path) == pathKey(entry.Path) {
-				candidates = append(candidates, oldName)
-			}
-		}
-		// A unique path match recognizes a rename. Ambiguous removed scopes
-		// are released rather than inferred as destructive include edits.
-		if len(candidates) == 1 {
-			retained[name] = unmatched[candidates[0]]
-			delete(unmatched, candidates[0])
-		}
-	}
 	for _, name := range names {
 		entry := entries[name]
 		value, present := current[name]
@@ -386,7 +365,7 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 			}
 			existing := stringSet(actual)
 			wanted := entry.Include
-			old := retained[name].Include
+			old := priorIncludeMembers(prior, entry.Path, actual)
 			if mode == "create" {
 				old = nil
 			}
@@ -444,6 +423,46 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 		}
 		writes = append(writes, sets[name]...)
 	}
+	if mode == "update" {
+		for _, name := range batchNames(prior) {
+			previous := prior[name]
+			if previous.Absent {
+				continue
+			}
+			value, err := configNode(root, previous.Path)
+			if err != nil {
+				return false, err
+			}
+			if !previous.Partial {
+				paths, err := departedWholePaths(previous.Path, value, entries)
+				if err != nil {
+					return false, err
+				}
+				for _, path := range paths {
+					deletes = append(deletes, map[string]any{"op": "delete", "path": path})
+					addRemovalCheck(desired, current, BatchEntry{Path: path, Absent: true}, nil)
+				}
+				continue
+			}
+			if wholeSelectionCovers(entries, previous.Path) {
+				continue
+			}
+			if _, retained := wantedByPath[pathKey(previous.Path)]; retained {
+				continue
+			}
+			actual, err := listValues(value)
+			if err != nil {
+				return false, err
+			}
+			present := stringSet(actual)
+			for _, member := range previous.Include {
+				if present[member] {
+					deletes = append(deletes, map[string]any{"op": "delete", "path": previous.Path, "value": member})
+				}
+			}
+			addRemovalCheck(desired, current, BatchEntry{Path: previous.Path, Partial: true, Exclude: previous.Include}, value)
+		}
+	}
 	for name, entry := range desired {
 		if !entry.Partial {
 			continue
@@ -464,13 +483,13 @@ func (vc *VyosConfig) MutateOwnedBatch(ctx context.Context, entries, prior Batch
 		}
 		desired[name] = entry
 	}
-	operations := append(deletes, writes...)
+	operations := append(compactDeletes(deletes), writes...)
 	if len(operations) > 0 {
 		if attempted, err := vc.configure(ctx, operations, desired); err != nil {
 			return attempted, err
 		}
 	}
-	// Forget departed selectors without touching their live configuration.
+	// Release departed ownership only after its configuration was deleted and verified.
 	for key, claim := range vc.managedPaths {
 		if claim.owner == owner {
 			delete(vc.managedPaths, key)

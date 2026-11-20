@@ -256,3 +256,61 @@ func TestBatchDynamicSchemaRejectsMalformedEntries(t *testing.T) {
 		})
 	}
 }
+
+// An unsuccessful deletion must remain in state so a fresh provider can retry
+// it; retaining only client-memory ownership is insufficient across Terraform runs.
+func TestBatchFailedRemovalCanRetryFromState(t *testing.T) {
+	ctx := context.Background()
+	live, reject := true, true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/configure" {
+			if reject {
+				fmt.Fprint(w, `{"success":false}`)
+				return
+			}
+			live = false
+		}
+		if live {
+			fmt.Fprint(w, `{"success":true,"data":{"node":{"owned":"keep-until-deleted","foreign":"keep"}}}`)
+		} else {
+			fmt.Fprint(w, `{"success":true,"data":{"node":{"foreign":"keep"}}}`)
+		}
+	}))
+	defer server.Close()
+	fresh := func() *ConfigBatchResource {
+		return &ConfigBatchResource{vyosConfig: vyos.New(&vyos.Client{HTTP: server.Client(), Endpoint: server.URL}, false, "")}
+	}
+	r := fresh()
+	var schema resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schema)
+	prior := batchModel(t, map[string]string{"owned": "keep-until-deleted"})
+	planned := batchModel(t, map[string]string{})
+	state := tfsdk.State{Schema: schema.Schema}
+	plan := tfsdk.Plan{Schema: schema.Schema}
+	if d := state.Set(ctx, &prior); d.HasError() {
+		t.Fatal(d)
+	}
+	if d := plan.Set(ctx, &planned); d.HasError() {
+		t.Fatal(d)
+	}
+	failed := resource.UpdateResponse{State: state}
+	r.Update(ctx, resource.UpdateRequest{State: state, Plan: plan}, &failed)
+	if !failed.Diagnostics.HasError() {
+		t.Fatal("failed deletion accepted")
+	}
+	reject = false
+	r = fresh()
+	read := resource.ReadResponse{State: failed.State}
+	r.Read(ctx, resource.ReadRequest{State: failed.State}, &read)
+	if read.Diagnostics.HasError() {
+		t.Fatal(read.Diagnostics)
+	}
+	retry := resource.UpdateResponse{State: read.State}
+	r.Update(ctx, resource.UpdateRequest{State: read.State, Plan: plan}, &retry)
+	if retry.Diagnostics.HasError() {
+		t.Fatal(retry.Diagnostics)
+	}
+	if live {
+		t.Fatal("failed removal lost ownership in state; retry left configuration behind")
+	}
+}

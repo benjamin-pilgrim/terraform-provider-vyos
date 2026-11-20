@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// Ownership transitions leave configuration outside the new scope untouched.
-func TestBatchSelectorTransitionsPreserveReleasedConfiguration(t *testing.T) {
+// Ownership transitions delete departed configuration and retain the new scope.
+func TestBatchSelectorTransitionsDeleteDepartedConfiguration(t *testing.T) {
 	ctx := context.Background()
 	for _, kind := range []string{"removed path", "narrowed parent", "whole to include"} {
 		t.Run(kind, func(t *testing.T) {
@@ -27,19 +27,31 @@ func TestBatchSelectorTransitionsPreserveReleasedConfiguration(t *testing.T) {
 			if _, err := vc.MutateOwnedBatch(ctx, prior, nil, "create", "same-owner"); err != nil {
 				t.Fatal(err)
 			}
-			before, _ := vc.snapshot(ctx)
-			f.calls = nil
-			if attempted, err := vc.MutateOwnedBatch(ctx, next, prior, "update", "same-owner"); err != nil || attempted {
-				t.Fatalf("ownership-only update configured the router: attempted=%v err=%v", attempted, err)
+			if attempted, err := vc.MutateOwnedBatch(ctx, next, prior, "update", "same-owner"); err != nil || !attempted {
+				t.Fatalf("departed configuration was not removed: attempted=%v err=%v", attempted, err)
 			}
-			after, _ := vc.snapshot(ctx)
-			if !reflect.DeepEqual(before, after) {
-				t.Fatal("ownership change altered released configuration")
-			}
-			for _, call := range f.calls {
-				if call == "/configure" || call == "/config-file" {
-					t.Fatalf("ownership-only transition called %s", call)
+			switch kind {
+			case "removed path":
+				if got, _ := configNode(f.tree, []string{"node", "old"}); got != nil {
+					t.Fatal("removed path survived", got)
 				}
+				if got, _ := configNode(f.tree, []string{"node", "retained"}); got != "same" {
+					t.Fatal("retained path changed", got)
+				}
+			case "narrowed parent":
+				if got, _ := configNode(f.tree, []string{"node", "released"}); got != nil {
+					t.Fatal("departed child survived", got)
+				}
+				if got, _ := configNode(f.tree, []string{"node", "kept"}); got != "one" {
+					t.Fatal("retained child changed", got)
+				}
+			case "whole to include":
+				if got := fixtureValues(t, f); !reflect.DeepEqual(got, []string{"owned"}) {
+					t.Fatal("whole-to-include retained unselected owned values", got)
+				}
+			}
+			if f.tree["unrelated"] != "keep" {
+				t.Fatal("transition changed unrelated configuration")
 			}
 			// Released ownership must also stop blocking another resource in this client.
 			released := Batch{"released": {Path: []string{"node", "old"}}}
@@ -73,18 +85,18 @@ func TestRenamedIncludeUpdatesMembersByPath(t *testing.T) {
 	}
 }
 
-func TestBatchCanReleaseEverySelector(t *testing.T) {
+func TestBatchCanRemoveEverySelector(t *testing.T) {
 	vc, f := newBatchFixture(t, false, "")
 	ctx := context.Background()
 	prior := Batch{"old": {Path: []string{"node", "old"}, Value: `"keep"`}}
 	if _, err := vc.MutateOwnedBatch(ctx, prior, nil, "create", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	if attempted, err := vc.MutateOwnedBatch(ctx, Batch{}, prior, "update", "owner"); err != nil || attempted {
-		t.Fatalf("empty selector set should only forget ownership: %v", err)
+	if attempted, err := vc.MutateOwnedBatch(ctx, Batch{}, prior, "update", "owner"); err != nil || !attempted {
+		t.Fatalf("empty selector set should delete owned configuration: %v", err)
 	}
-	if value, _ := configNode(f.tree, []string{"node", "old"}); value != "keep" {
-		t.Fatal("forgetting all selectors deleted configuration")
+	if value, _ := configNode(f.tree, []string{"node", "old"}); value != nil {
+		t.Fatal("removing all selectors left configuration behind")
 	}
 	if _, err := vc.ShowOwnedBatch(ctx, prior, "other-owner"); err != nil {
 		t.Fatal("released selector still blocks ownership", err)
@@ -114,11 +126,11 @@ func TestBatchExplicitAbsenceDeletesOnlySelectedSubtree(t *testing.T) {
 	}
 }
 
-// Removing one include entry releases its members even when another entry
-// continues to own members of the same multivalue leaf.
-func TestRemovingIncludeEntryPreservesItsMembers(t *testing.T) {
+// Removing an include entry deletes its members and preserves unrelated values.
+func TestRemovingIncludeEntryDeletesOnlyItsMembers(t *testing.T) {
 	vc, f := newBatchFixture(t, false, "")
 	ctx := context.Background()
+	f.tree["node"] = map[string]any{"values": []string{"foreign"}}
 	prior := Batch{
 		"released": {Path: []string{"node", "values"}, Partial: true, Include: []string{"released"}},
 		"retained": {Path: []string{"node", "values"}, Partial: true, Include: []string{"retained"}},
@@ -127,10 +139,10 @@ func TestRemovingIncludeEntryPreservesItsMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := Batch{"retained": prior["retained"]}
-	if attempted, err := vc.MutateOwnedBatch(ctx, next, prior, "update", "owner"); err != nil || attempted {
-		t.Fatalf("released include mutated router: %v", err)
+	if attempted, err := vc.MutateOwnedBatch(ctx, next, prior, "update", "owner"); err != nil || !attempted {
+		t.Fatalf("removed include was not deleted: %v", err)
 	}
-	if got := fixtureValues(t, f); !reflect.DeepEqual(got, []string{"released", "retained"}) {
-		t.Fatalf("released member disappeared: %v", got)
+	if got := fixtureValues(t, f); !reflect.DeepEqual(got, []string{"foreign", "retained"}) {
+		t.Fatalf("removed member survived or unrelated members changed: %v", got)
 	}
 }
