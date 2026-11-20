@@ -28,6 +28,32 @@ resource "vyos_config" "ingress_rules" {
 }
 ```
 
+## Container images
+
+`vyos_container_image` ensures an immutable image is present through VyOS's
+`/container-image` API. Use a fully qualified digest reference and pass its
+`image` attribute into container configuration so Terraform prepares the cache
+before committing that configuration:
+
+```hcl
+resource "vyos_container_image" "booter" {
+  image = "ghcr.io/siderolabs/booter@sha256:f2ee41daabd2e698184c0a6dc29fe9321aabc829fd18046be54c7da923b0cea3"
+}
+```
+
+Existing cached images are adopted without another pull. Refresh reads
+`show container image json`, matches the full repository digest, and plans
+recreation if that image was pruned. Mutable tags are unsupported. The router
+must expose `/container-image` and the JSON listing command; unsupported or
+malformed responses fail refresh rather than assume that an image is missing.
+
+Destroying the resource retains the shared image cache. Prune images separately
+when no containers or installed VyOS versions need them. Pulls are operational
+actions, so the provider's configuration saving and commit-confirm settings do
+not apply. A pull that times out may still complete on the router; a later apply
+checks the cache before trying again. Import an existing image using its full
+repository digest as the import ID.
+
 ## Ownership and values
 
 `vyos_config` and batch `value` entries **own their entire selected subtree**. Updates delete and
